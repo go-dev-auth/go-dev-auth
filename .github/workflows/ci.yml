@@ -20,7 +20,7 @@ jobs:
         go: ['1.22', 'stable']
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ matrix.go }}
           check-latest: true
@@ -42,7 +42,7 @@ jobs:
           # warnings; compare against the previous commit so unchanged
           # baseline issues do not fail unrelated pull requests.
           fetch-depth: 2
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with: { go-version: stable }
       # golangci-lint is installed and run from a plain shell step rather
       # than golangci-lint-action. That action's own action.yml still
@@ -70,7 +70,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with: { go-version: stable }
       - name: List fuzz targets
         run: make fuzz-list
@@ -95,7 +95,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with: { go-version: stable }
       - name: SQL adapter and full auth flow against real SQLite
         env:
