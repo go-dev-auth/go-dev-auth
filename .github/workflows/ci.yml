@@ -37,6 +37,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          # Lint gates regressions while this repository pays down legacy
+          # warnings; compare against the previous commit so unchanged
+          # baseline issues do not fail unrelated pull requests.
+          fetch-depth: 2
       - uses: actions/setup-go@v6
         with: { go-version: stable }
       # golangci-lint is installed and run from a plain shell step rather
@@ -52,7 +57,7 @@ jobs:
         run: |
           curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
             | sh -s -- -b "$(go env GOPATH)/bin" "$GOLANGCI_LINT_VERSION"
-          "$(go env GOPATH)/bin/golangci-lint" run
+          "$(go env GOPATH)/bin/golangci-lint" run --new-from-rev=HEAD~1
 
   fuzz:
     # Short smoke run on every PR; the parsers are the highest-risk
