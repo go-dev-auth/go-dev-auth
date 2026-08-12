@@ -9,6 +9,22 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Pre-1.0: the public API may still change. Once tagged v1, breaking
 changes will require a major version.
 
+## [0.1.1] - 2026-08-12
+
+CI only — no library code changed, so nothing a `go get` consumer
+depends on is affected.
+
+### Changed
+- CI: `golangci-lint-action` upgraded to v8 so it installs golangci-lint
+  v2, which the repository's `.golangci.yml` (`version: "2"`) requires;
+  the v1 action rejected the v2 config schema.
+- CI: `actions/checkout` (v4 → v5) and `actions/setup-go` (v5 → v6) moved
+  to their Node 24 major versions, off the deprecated Node 20 runtime.
+
+## [0.1.0] - 2026-08-12
+
+First tagged release. Everything below was introduced in it.
+
 ### Added
 - Email/password authentication, social sign-on (OAuth 2.0 / OIDC with
   PKCE), database-backed sessions, account linking, email verification,
