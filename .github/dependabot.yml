@@ -2,15 +2,19 @@ version: 2
 updates:
   # The core module has no dependencies by design; these cover the
   # storage adapters and the CI actions themselves.
-  - package-ecosystem: gomod
+- package-ecosystem: gomod
     directory: /
     schedule: { interval: weekly }
+    target-branch: dev
   - package-ecosystem: gomod
     directory: /storage/mongostore
     schedule: { interval: weekly }
   - package-ecosystem: gomod
     directory: /storage/sqlstore/integration
     schedule: { interval: weekly }
-  - package-ecosystem: github-actions
+- package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly }
+    groups:
+      actions:
+        patterns: ["*"]
