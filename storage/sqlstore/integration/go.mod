@@ -9,7 +9,7 @@ go 1.22
 
 require (
 	github.com/go-dev-auth/go-dev-auth v0.1.0
-	github.com/mattn/go-sqlite3 v1.14.24
+	github.com/mattn/go-sqlite3 v1.14.49
 )
 
 // Test the adapter against the core library in the same checkout.
