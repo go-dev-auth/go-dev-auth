@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (go ${{ matrix.go }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Oldest supported release and current stable: a library should
+        # not silently require a newer toolchain than it declares.
+        go: ['1.22', 'stable']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          check-latest: true
+      - name: Verify formatting
+        run: make fmt-check
+      - name: Vet
+        run: go vet ./...
+      - name: Test (all modules)
+        run: make test
+      - name: Race detector
+        run: make race
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: stable }
+      - uses: golangci/golangci-lint-action@v6
+        with: { version: latest }
+
+  fuzz:
+    # Short smoke run on every PR; the parsers are the highest-risk
+    # surface and a regression there should not wait for a nightly.
+    #
+    # `make fuzz` fails when it discovers no targets, so this job cannot
+    # go green having executed nothing — which is exactly what it used to
+    # do. `make fuzz-list` prints what it is about to run so the log
+    # shows the coverage rather than asserting it.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: stable }
+      - name: List fuzz targets
+        run: make fuzz-list
+      - name: Fuzz each target briefly
+        # FUZZMINIMIZETIME defaults to 60s in the toolchain, which a 20s
+        # budget would be spent entirely on. Keep it under the run time.
+        run: make fuzz FUZZTIME=20s FUZZMINIMIZETIME=3s
+
+  integration:
+    # Real-database tests. Today this means SQLite only — that is the
+    # honest scope, and the job name says so.
+    #
+    # An earlier revision of this file started postgres/mysql/mongo
+    # service containers and exported POSTGRES_DSN / MYSQL_DSN /
+    # MONGODB_URI. No Go file read any of them, so the job spun up three
+    # databases and tested none of them, while the README claimed all
+    # three backends passed the conformance suite. The containers are
+    # removed rather than left as decoration; they come back in the same
+    # commit that adds the drivers and the suites that use them.
+    # Tracking issue: "run storagetest against Postgres, MySQL, Mongo".
+    name: integration (SQLite)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: stable }
+      - name: SQL adapter and full auth flow against real SQLite
+        env:
+          CGO_ENABLED: '1'
+        run: cd storage/sqlstore/integration && go test ./...
+      - name: Mongo adapter against the wire-protocol test double
+        # Not a real server: storage/mongostore/internal/fakemongo speaks
+        # OP_MSG well enough to exercise the adapter's query building.
+        # It cannot catch a server-behaviour difference.
+        run: cd storage/mongostore && go test ./...

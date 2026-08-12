@@ -1,0 +1,97 @@
+# go-dev-auth
+
+> Authentication library for Go: email/password, social sign-on (OAuth 2.0 / OIDC with PKCE), sessions, two-factor, magic links, organizations, admin, API keys and JWT. **Zero external dependencies** in the core module — standard library only. Modelled on better-auth. Requires Go 1.22+.
+
+Import path `github.com/go-dev-auth/go-dev-auth`, package name `godevauth`. The two differ, so the import needs an explicit alias:
+
+```go
+godevauth "github.com/go-dev-auth/go-dev-auth"
+```
+
+`Auth.Handler()` returns a plain `http.Handler`, so it mounts on net/http, chi, echo, gorilla or gin (`gin.WrapH`) unchanged.
+
+## Minimal working program
+
+Every field below is required; `New` returns an error rather than starting in an unsafe state.
+
+```go
+package main
+
+import (
+	"net/http"
+	"os"
+
+	godevauth "github.com/go-dev-auth/go-dev-auth"
+	"github.com/go-dev-auth/go-dev-auth/storage/memory"
+)
+
+func main() {
+	auth, err := godevauth.New(godevauth.Config{
+		BaseURL:          "http://localhost:8080",  // required
+		Secret:           os.Getenv("AUTH_SECRET"), // required, 32+ random bytes
+		Database:         memory.New(),             // required
+		EmailAndPassword: godevauth.EmailPasswordConfig{Enabled: true},
+	})
+	if err != nil {
+		panic(err)
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/api/auth/", auth.Handler())
+	http.ListenAndServe(":8080", mux)
+}
+```
+
+## Rules that prevent the common mistakes
+
+These are the errors `New` refuses to start on, and the traps that compile but misbehave. Follow them and generated code will be correct on the first run.
+
+1. **`sqlstore.New(db, dialect, nil)` — pass `nil` for the schema.** `godevauth.New` supplies the full schema (core tables plus every plugin column) and migrates. Passing `storage.CoreSchema()` pins the adapter before plugins contribute their columns, and the first query selecting one fails.
+2. **Set `EmailAndPassword.ResetPasswordURL` whenever `SendResetPassword` is set.** It is the page the emailed link redirects to, with `?token=...` appended. Prefer a path (`"/choose-password"`), resolved against `BaseURL`. `New` rejects the combination without it, because otherwise the reset link dead-ends.
+3. **Behind a load balancer, set BOTH `Advanced.TrustProxyHeaders: true` AND `Advanced.TrustedProxies`.** Setting neither makes the whole fleet share one rate-limit bucket; setting trust without a proxy list lets any client forge its own bucket. `New` rejects either half alone.
+4. **`Secret` must be 32+ random bytes** (`openssl rand -base64 32`). 16 is the hard floor and warns.
+5. **Capture plugin instances you need to call later.** `jwt.New()` inline inside `Plugins:` makes `SignSession`, `admin.IsAdmin`, `organization.Membership` unreachable. Assign to a variable first.
+6. **Register `auth.CallbackURL("google")` as the provider's redirect URI.** Do not assemble it by hand.
+7. **Custom user fields read back from `user.Extra["fieldName"]`**, not a struct field.
+8. **Migration runs inside `godevauth.New`** unless `Advanced.DisableAutoMigrate` is set. Do not call `store.Migrate` again.
+
+## Reading the session in your own handler
+
+The most common thing an application does after wiring auth:
+
+```go
+func me(w http.ResponseWriter, r *http.Request) {
+	sd, err := auth.GetSession(r)
+	if err != nil { // godevauth.ErrNoSession when not signed in
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	fmt.Fprintf(w, "hello %s", sd.User.Email)
+}
+```
+
+## Docs
+
+- [README](README.md): full feature list, configuration, deployment.
+- [Architecture](docs/architecture.md): what each file and package owns, where new code belongs.
+- [Writing a plugin](docs/writing-a-plugin.md): the `Plugin` interface and conventions.
+- [Security model](.github/SECURITY.md): threat model and reporting.
+- [Runnable examples](https://pkg.go.dev/github.com/go-dev-auth/go-dev-auth#pkg-examples): 35 compiled, tested examples on pkg.go.dev — these are kept correct by CI and are the best source to copy from.
+
+## Packages
+
+- `github.com/go-dev-auth/go-dev-auth` — `Auth`, `Config`, `Ctx`, `Plugin`, `Route`.
+- `.../storage` — the `Adapter` interface and models.
+- `.../storage/memory` — in-memory adapter (tests, development).
+- `.../storage/sqlstore` — PostgreSQL, MySQL, SQLite over `database/sql`. Bring your own driver.
+- `.../storage/mongostore` — MongoDB. Separate module.
+- `.../storage/storagetest` — conformance suite every adapter must pass.
+- `.../crypto` — scrypt, PBKDF2, AES-GCM, HMAC, TOTP/HOTP, JWT, JWKS.
+- `.../oauth2` — OAuth 2.0 / OIDC client, PKCE, ID-token verification.
+- `.../providers` — Google, GitHub, Discord, Facebook, Microsoft, Apple, GitLab, LinkedIn, Spotify, Twitch, X.
+- `.../ratelimit` — rules and limiter store.
+- `.../plugins/{twofactor,magiclink,organization,admin,apikey,jwt,bearer}` — optional features.
+- `.../plugins/plugintest` — harness for testing a plugin.
+
+## Not implemented
+
+Do not generate code for these; they do not exist yet: passkeys/WebAuthn, SAML/SSO, acting as an OIDC or OAuth 2.1 provider, phone/SMS, anonymous sessions, multi-session, OpenTelemetry instrumentation.

@@ -1,0 +1,42 @@
+name: Bug report
+description: Something behaves incorrectly
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For **security vulnerabilities do not open an issue** — use private
+        reporting, see [SECURITY.md](../SECURITY.md).
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you expected, and what happened instead.
+    validations: { required: true }
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: >
+        Ideally a failing Go test using the in-memory adapter — that is
+        the fastest path to a fix, and it becomes the regression test.
+      render: go
+    validations: { required: true }
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      placeholder: v0.1.0 or a commit SHA
+    validations: { required: true }
+  - type: dropdown
+    id: storage
+    attributes:
+      label: Storage backend
+      options: [memory, PostgreSQL, MySQL, SQLite, MongoDB, custom]
+    validations: { required: true }
+  - type: input
+    id: goversion
+    attributes:
+      label: Go version
+      placeholder: output of `go version`
+    validations: { required: true }

@@ -1,0 +1,46 @@
+# Linter configuration. The set is deliberately small and high-signal:
+# an authentication library benefits far more from catching an ignored
+# error or an unchecked type assertion than from style opinions.
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  enable:
+    - errcheck      # unhandled errors: the most common real defect
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - bodyclose     # leaked HTTP response bodies
+    - noctx         # requests built without a context
+    - errorlint     # wrong error comparison, breaks errors.Is chains
+    - gosec         # security-focused heuristics
+    - misspell
+    - unconvert
+    - copyloopvar
+
+  settings:
+    errcheck:
+      # Failing to write a response body cannot be handled meaningfully;
+      # everything else must be checked.
+      exclude-functions:
+        - (net/http.ResponseWriter).Write
+    gosec:
+      excludes:
+        # G404 (weak RNG) is not applicable: this package uses
+        # crypto/rand everywhere it matters, enforced by review.
+        - G404
+
+  exclusions:
+    rules:
+      # Test fixtures deliberately construct malformed input and ignore
+      # errors from helpers whose failure the assertion already covers.
+      - path: _test\.go
+        linters: [errcheck, gosec, bodyclose, noctx]
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

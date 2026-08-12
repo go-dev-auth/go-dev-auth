@@ -1,0 +1,23 @@
+name: Feature request
+description: Propose new behaviour
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that you cannot do today?
+    validations: { required: true }
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed API
+      description: A sketch of the configuration or call you would want.
+      render: go
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: >
+        Could a plugin do this outside the core? The plugin interfaces
+        exist so that features can live in your own code.

@@ -1,0 +1,15 @@
+# Build and test artefacts
+*.exe
+*.test
+*.out
+coverage.out
+/dist/
+
+# Go workspace files are developer-local; see CONTRIBUTING.md
+go.work
+go.work.sum
+
+# Editor and OS noise
+.idea/
+.vscode/
+.DS_Store
