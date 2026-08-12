@@ -19,8 +19,8 @@ jobs:
         # not silently require a newer toolchain than it declares.
         go: ['1.22', 'stable']
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: ${{ matrix.go }}
           check-latest: true
@@ -36,8 +36,8 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with: { go-version: stable }
       # v8 of the action installs golangci-lint v2, which the config in
       # .golangci.yml (version: "2") requires. The older v6 action pulls
@@ -57,8 +57,8 @@ jobs:
     # shows the coverage rather than asserting it.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with: { go-version: stable }
       - name: List fuzz targets
         run: make fuzz-list
@@ -82,8 +82,8 @@ jobs:
     name: integration (SQLite)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with: { go-version: stable }
       - name: SQL adapter and full auth flow against real SQLite
         env:
