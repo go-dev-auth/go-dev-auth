@@ -39,7 +39,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with: { go-version: stable }
-      - uses: golangci/golangci-lint-action@v6
+      # v8 of the action installs golangci-lint v2, which the config in
+      # .golangci.yml (version: "2") requires. The older v6 action pulls
+      # golangci-lint v1, whose parser rejects the v2 schema keys.
+      # `latest` tracks the newest v2 release, which is the one most
+      # likely to understand the current Go toolchain.
+      - uses: golangci/golangci-lint-action@v8
         with: { version: latest }
 
   fuzz:
