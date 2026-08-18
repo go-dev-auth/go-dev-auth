@@ -353,3 +353,21 @@ func TestPluginRequiresASender(t *testing.T) {
 		t.Fatalf("error = %v, want it to name the missing option", err)
 	}
 }
+
+// TestMagicLinkValidatesEmail is the sibling of the admin create-user
+// gap: with sign-up enabled, a magic link creates the account on first
+// use, so a malformed address must be rejected before any link is sent —
+// otherwise it becomes a user who can never receive a link again.
+func TestMagicLinkValidatesEmail(t *testing.T) {
+	env, box := newEnv(t)
+
+	res, body := env.POST("/sign-in/magic-link", map[string]any{"email": "not-an-email"})
+	env.RequireErrorCode(res, body, http.StatusBadRequest, "INVALID_EMAIL")
+	if box.count() != 0 {
+		t.Fatalf("a link was sent to a malformed address: %d", box.count())
+	}
+
+	// a valid address still works
+	res, body = env.POST("/sign-in/magic-link", map[string]any{"email": "good@example.com"})
+	env.RequireStatus(res, body, http.StatusOK)
+}

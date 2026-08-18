@@ -97,16 +97,22 @@ paths that unit tests reach less than the happy path).
    — the same standard as the rest of the Mongo tests; a real server run
    belongs with caveat 2.
 
-2. **Postgres and MySQL remain asserted, not executed.** The migration
-   and composite-unique SQL for those two dialects is covered by
-   exact-string unit tests, not by running against a server (there is
-   none here). CI has the service containers; run the integration suite
-   against them once before the first real release, and delete the
-   "beta" caveat from the README storage section when it goes green.
+2. **PostgreSQL is now field-proven; MySQL and Mongo remain asserted.**
+   Update (12 Aug 2026): an early adopter is running the whole library —
+   all plugins, migrations, the full auth flow — in a real application on
+   live PostgreSQL, and reports it working. That moves Postgres from
+   "generated SQL asserted by unit tests" to "exercised end to end in
+   production by a real user." The one gap that remains is automated: the
+   `storagetest` conformance suite is still not wired to run against
+   Postgres in CI, so a regression there would not be caught
+   automatically. MySQL's dialect is still only unit-asserted, and
+   MongoDB is still tested against the in-house wire-protocol double.
+   Wire the conformance suite to real Postgres/MySQL/Mongo containers in
+   CI to close this for good.
 
-Neither blocks a v0.1.0 tag — a pre-1.0 release with SQLite verified and
-PG/MySQL/Mongo asserted is an honest place to start — but both should be
-closed in the first networked CI run, and the README already says so.
+Neither blocks a v0.1.0 tag — a pre-1.0 release with SQLite verified in
+CI and PostgreSQL proven in the field is a stronger place to start than
+the last review assumed.
 
 ## What is still deliberately not here
 

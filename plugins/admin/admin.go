@@ -22,6 +22,13 @@ type Options struct {
 	// AdminRoles are roles with admin privileges. Defaults to
 	// ["admin"].
 	AdminRoles []string
+	// Roles, when set, is the allow-list of role values create-user and
+	// set-role will accept. DefaultRole and AdminRoles are always
+	// allowed and need not be repeated here. Leave it empty to allow any
+	// role string (the previous behaviour) — but setting it closes the
+	// typo hole where "enginer" silently creates an account locked out of
+	// every route.
+	Roles []string
 	// AdminUserIDs always have admin privileges regardless of role.
 	AdminUserIDs []string
 	// ImpersonationSessionDuration defaults to 1 hour.
@@ -198,6 +205,55 @@ func (p *Plugin) requireAdmin(c *godevauth.Ctx) (*godevauth.SessionData, error) 
 // administrator. Every privileged endpoint in this plugin goes through
 // it, including the read-only ones: who listed the user table, and when,
 // is part of the record an auditor asks for.
+// validateRole rejects a role that is not on the configured allow-list.
+// When Options.Roles is empty the role is not constrained (any string is
+// accepted), preserving the previous behaviour for applications that
+// define roles dynamically. DefaultRole and AdminRoles are always
+// permitted so an operator need not repeat them.
+func (p *Plugin) validateRole(role string) error {
+	if len(p.opts.Roles) == 0 {
+		return nil
+	}
+	allowed := func(r string) bool {
+		if r == p.opts.DefaultRole {
+			return true
+		}
+		for _, a := range p.opts.AdminRoles {
+			if r == a {
+				return true
+			}
+		}
+		for _, a := range p.opts.Roles {
+			if r == a {
+				return true
+			}
+		}
+		return false
+	}
+	if !allowed(role) {
+		return godevauth.NewAPIError(http.StatusBadRequest, "INVALID_ROLE",
+			"Role is not one of the allowed roles")
+	}
+	return nil
+}
+
+// mapUserWriteError turns a store error from a user read or write into
+// the right response instead of collapsing everything to "user not
+// found". A genuine missing row is a 404; a duplicate (e.g. changing an
+// e-mail to one already taken) is a conflict, not a not-found; anything
+// else is a real error the caller should see rather than a misleading
+// 404 that hides a storage failure.
+func (p *Plugin) mapUserWriteError(err error) error {
+	switch {
+	case errors.Is(err, storage.ErrNotFound):
+		return godevauth.ErrUserNotFound
+	case errors.Is(err, storage.ErrUniqueViolation):
+		return godevauth.ErrUserAlreadyExists
+	default:
+		return err
+	}
+}
+
 func (p *Plugin) audit(c *godevauth.Ctx, sd *godevauth.SessionData, e godevauth.Event) {
 	if sd != nil {
 		if e.ActorID == "" {
@@ -239,10 +295,27 @@ func (p *Plugin) handleCreateUser(c *godevauth.Ctx) error {
 	if role == "" {
 		role = p.opts.DefaultRole
 	}
-	extra["role"] = role
-	if body.Email == "" {
-		return godevauth.ErrInvalidEmail
+	// Apply the library's own credential rules — the same ones the public
+	// sign-up path enforces — so an account made by an admin is not held
+	// to a weaker standard than one made by a user. Before this, create-
+	// user accepted "not-an-email" with the password "123": a typo'd
+	// address is a user who can never receive a password reset. Because
+	// admin.create-user is often the only account-creation path once
+	// public sign-up is disabled, this was 100% of accounts bypassing
+	// 100% of the rules. requireAdmin above runs first, so a non-admin is
+	// refused before any of this and cannot use it as a validation oracle.
+	if err := p.auth.ValidateEmail(body.Email); err != nil {
+		return err
 	}
+	if body.Password != "" {
+		if err := p.auth.ValidatePassword(body.Password); err != nil {
+			return err
+		}
+	}
+	if err := p.validateRole(role); err != nil {
+		return err
+	}
+	extra["role"] = role
 	if _, err := p.auth.FindUserByEmail(ctx, body.Email); err == nil {
 		return godevauth.ErrUserAlreadyExists
 	}
@@ -373,9 +446,12 @@ func (p *Plugin) handleSetRole(c *godevauth.Ctx) error {
 	if err := c.BindJSON(&body); err != nil {
 		return err
 	}
+	if err := p.validateRole(body.Role); err != nil {
+		return err
+	}
 	user, err := p.auth.UpdateUserRecord(c.Context(), body.UserID, map[string]any{"role": body.Role})
 	if err != nil {
-		return godevauth.ErrUserNotFound
+		return p.mapUserWriteError(err)
 	}
 	// Granting a role is how an administrator makes another one, so
 	// this is the event a compromised admin account shows up in first.
@@ -398,6 +474,12 @@ func (p *Plugin) handleSetUserPassword(c *godevauth.Ctx) error {
 	}
 	var body setUserPasswordBody
 	if err := c.BindJSON(&body); err != nil {
+		return err
+	}
+	// Hold an admin-set password to the same rule as every other
+	// password-setting path — otherwise an admin could set "123" and the
+	// account would be weaker than any a user could create for themselves.
+	if err := p.auth.ValidatePassword(body.NewPassword); err != nil {
 		return err
 	}
 	hash, err := p.auth.Config().EmailAndPassword.PasswordHasher.Hash(body.NewPassword)
@@ -434,7 +516,7 @@ func (p *Plugin) handleUpdateUser(c *godevauth.Ctx) error {
 	delete(body.Data, "id")
 	user, err := p.auth.UpdateUserRecord(c.Context(), body.UserID, body.Data)
 	if err != nil {
-		return godevauth.ErrUserNotFound
+		return p.mapUserWriteError(err)
 	}
 	p.audit(c, sd, godevauth.Event{
 		Type: godevauth.EventAdminAction, Action: "update-user",
@@ -473,7 +555,7 @@ func (p *Plugin) handleBanUser(c *godevauth.Ctx) error {
 	}
 	user, err := p.auth.UpdateUserRecord(c.Context(), body.UserID, update)
 	if err != nil {
-		return godevauth.ErrUserNotFound
+		return p.mapUserWriteError(err)
 	}
 	// revoke all sessions of the banned user
 	_ = p.auth.RevokeUserSessions(c.Context(), body.UserID)
@@ -500,7 +582,7 @@ func (p *Plugin) handleUnbanUser(c *godevauth.Ctx) error {
 		"banned": false, "banReason": "", "banExpires": time.Time{},
 	})
 	if err != nil {
-		return godevauth.ErrUserNotFound
+		return p.mapUserWriteError(err)
 	}
 	p.audit(c, sd, godevauth.Event{Type: godevauth.EventUserUnbanned, TargetID: user.ID})
 	return c.JSON(http.StatusOK, map[string]any{"user": user})

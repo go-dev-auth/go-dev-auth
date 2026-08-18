@@ -6,6 +6,8 @@ A comprehensive, framework-agnostic authentication library for Go, modeled after
 go get github.com/go-dev-auth/go-dev-auth
 ```
 
+> **Status: pre-1.0, in production use.** The library runs in production in a real automation project on PostgreSQL, using the full feature set. It is still pre-1.0, so the public API may change between minor versions — pin an exact version. See [storage adapters](#storage-adapters) for exactly which backends have been verified in CI versus proven in the field.
+
 ## Features
 
 **Core**
@@ -113,7 +115,14 @@ Direct-to-internet deployments need none of this: leave all three unset.
 
 All adapters are written against the same conformance suite (`storage/storagetest`), which pins the semantics the auth core depends on: unique-violation reporting, NULL vs zero, chronological sorting, clause folding, literal case-insensitive substring matching and compare-and-set update counts.
 
-**What has actually been executed, as of this revision:** the suite runs in CI against the in-memory adapter and against **real SQLite**, and against a wire-protocol test double for MongoDB. It has **not** yet been run against a real PostgreSQL, MySQL or MongoDB server — so the Postgres and MySQL dialects (placeholder style, quoting, the offset form, driver-error classification) are covered by unit tests on the generated SQL and not by execution. Treat those two backends as beta and report anything you hit. This paragraph gets deleted the day CI runs the suite against all three.
+**What has actually been executed, as of this revision:**
+
+- **SQLite** — the full conformance suite and a complete HTTP auth flow run against a real SQLite database in CI on every push. Verified.
+- **PostgreSQL** — **running in production.** The whole library (all plugins, migrations, the full auth flow) is deployed in a real automation project on live PostgreSQL. Field-proven; the one remaining gap is automated, not functional: the `storagetest` conformance suite is not yet wired to run against Postgres in CI, so a future regression there would not be caught automatically.
+- **MySQL** — the dialect's generated SQL is covered by unit tests but has not been run against a live MySQL server. Beta; report anything you hit.
+- **MongoDB** — exercised against an in-house wire-protocol test double, not a live `mongod`. Beta.
+
+This section gets simpler the day CI runs the conformance suite against real Postgres, MySQL and Mongo.
 
 If you write your own adapter, run that suite against it:
 
