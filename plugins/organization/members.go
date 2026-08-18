@@ -30,8 +30,10 @@ func (p *Plugin) handleInviteMember(c *godevauth.Ctx) error {
 	if err := c.BindJSON(&body); err != nil {
 		return err
 	}
-	if body.Email == "" {
-		return godevauth.ErrInvalidEmail
+	// Validate the address with the same rule sign-up uses: an invite for
+	// a malformed address is one that can never be redeemed.
+	if err := p.auth.ValidateEmail(body.Email); err != nil {
+		return err
 	}
 	role := body.Role
 	if role == "" {
@@ -40,6 +42,14 @@ func (p *Plugin) handleInviteMember(c *godevauth.Ctx) error {
 	if role == RoleOwner {
 		return godevauth.NewAPIError(http.StatusBadRequest, "CANNOT_INVITE_OWNER",
 			"You cannot invite a member as owner")
+	}
+	// Constrain the role to the known set, exactly as update-member-role
+	// does. Without this a typo like "membr" is written to the invitation
+	// and copied onto the member on accept, where no requireRole check
+	// will ever match it — silently locking the member out of every
+	// role-gated route while still counting as a member.
+	if role != RoleAdmin && role != RoleMember {
+		return godevauth.NewAPIError(http.StatusBadRequest, "INVALID_ROLE", "Invalid role")
 	}
 	orgID := p.activeOrg(c, sd, body.OrganizationID)
 	if orgID == "" {

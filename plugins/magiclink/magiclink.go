@@ -91,8 +91,11 @@ func (p *Plugin) handleSignIn(c *godevauth.Ctx) error {
 	if err := c.BindJSON(&body); err != nil {
 		return err
 	}
-	if body.Email == "" {
-		return godevauth.ErrInvalidEmail
+	// A magic link with sign-up enabled creates the account on first use,
+	// so a malformed address here becomes a user who can never receive a
+	// link again. Hold it to the same e-mail rule as the sign-up path.
+	if err := p.auth.ValidateEmail(body.Email); err != nil {
+		return err
 	}
 	ctx := c.Context()
 	if p.opts.DisableSignUp {

@@ -364,20 +364,30 @@ func (a *Auth) handleResetPassword(c *Ctx) error {
 		}
 	}
 	// Password reset is the standard recovery path after a compromise,
-	// so every existing session is revoked unless explicitly kept.
-	revoked := false
-	if !a.config.EmailAndPassword.KeepSessionsOnPasswordReset {
-		_ = a.store.DeleteUserSessions(ctx, userID)
-		revoked = true
-	}
+	// so every existing session is revoked unless explicitly kept. If the
+	// revocation fails the reset does not silently claim success: the
+	// password is already changed, but an attacker's live session would
+	// survive, so the failure is logged and recorded as a failed
+	// revocation rather than reported as done.
 	a.EmitEvent(c, Event{Type: EventPasswordReset, ActorID: user.ID, Email: user.Email})
-	if revoked {
-		a.EmitEvent(c, Event{
-			Type:    EventSessionRevoked,
-			ActorID: user.ID,
-			Email:   user.Email,
-			Action:  "all_sessions_after_password_reset",
-		})
+	if !a.config.EmailAndPassword.KeepSessionsOnPasswordReset {
+		if err := a.store.DeleteUserSessions(ctx, userID); err != nil {
+			a.logger.Error("go-dev-auth: revoking sessions after password reset failed; "+
+				"an existing session may survive the reset",
+				"userId", userID, "err", err)
+			a.EmitEvent(c, Event{
+				Type: EventSessionRevoked, Outcome: OutcomeFailure,
+				ActorID: user.ID, Email: user.Email,
+				Action: "all_sessions_after_password_reset",
+			})
+		} else {
+			a.EmitEvent(c, Event{
+				Type:    EventSessionRevoked,
+				ActorID: user.ID,
+				Email:   user.Email,
+				Action:  "all_sessions_after_password_reset",
+			})
+		}
 	}
 	if h := a.config.EmailAndPassword.OnPasswordReset; h != nil {
 		_ = h(ctx, user)
@@ -441,10 +451,16 @@ func (a *Auth) handleChangePassword(c *Ctx) error {
 	// way; this makes the pair consistent.
 	token := ""
 	if body.RevokeOtherSessions || !a.config.EmailAndPassword.KeepSessionsOnPasswordChange {
-		_ = a.revokeOtherSessions(ctx, sd.User.ID, sd.Session.Token)
+		outcome := OutcomeSuccess
+		if err := a.revokeOtherSessions(ctx, sd.User.ID, sd.Session.Token); err != nil {
+			a.logger.Error("go-dev-auth: revoking other sessions after password change failed",
+				"userId", sd.User.ID, "err", err)
+			outcome = OutcomeFailure
+		}
 		token = sd.Session.Token
 		a.EmitEvent(c, Event{
 			Type:      EventSessionRevoked,
+			Outcome:   outcome,
 			ActorID:   sd.User.ID,
 			Email:     sd.User.Email,
 			SessionID: sd.Session.ID,
@@ -522,10 +538,16 @@ func (a *Auth) handleSetPassword(c *Ctx) error {
 	// re-authenticates under the new arrangement.
 	token := ""
 	if body.RevokeOtherSessions || !a.config.EmailAndPassword.KeepSessionsOnPasswordChange {
-		_ = a.revokeOtherSessions(ctx, sd.User.ID, sd.Session.Token)
+		outcome := OutcomeSuccess
+		if err := a.revokeOtherSessions(ctx, sd.User.ID, sd.Session.Token); err != nil {
+			a.logger.Error("go-dev-auth: revoking other sessions after set-password failed",
+				"userId", sd.User.ID, "err", err)
+			outcome = OutcomeFailure
+		}
 		token = sd.Session.Token
 		a.EmitEvent(c, Event{
 			Type:      EventSessionRevoked,
+			Outcome:   outcome,
 			ActorID:   sd.User.ID,
 			Email:     sd.User.Email,
 			SessionID: sd.Session.ID,
@@ -539,6 +561,18 @@ func (a *Auth) handleSetPassword(c *Ctx) error {
 }
 
 // ---- helpers ----
+
+// ValidateEmail applies the same e-mail check the public sign-up path
+// uses. It is exported so plugins that create users (for example the
+// admin plugin's create-user endpoint) enforce exactly the same rule
+// as sign-up rather than a weaker one of their own.
+func (a *Auth) ValidateEmail(email string) error { return validateEmail(email) }
+
+// ValidatePassword applies the same length check the public sign-up path
+// uses, honouring the configured Min/MaxPasswordLength. Exported for the
+// same reason as ValidateEmail: one credential rule, enforced everywhere
+// an account can be created.
+func (a *Auth) ValidatePassword(password string) error { return a.validatePassword(password) }
 
 func (a *Auth) validatePassword(password string) error {
 	if len(password) < a.config.EmailAndPassword.MinPasswordLength {
