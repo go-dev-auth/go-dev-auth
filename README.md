@@ -6,6 +6,8 @@ A comprehensive, framework-agnostic authentication library for Go, modeled after
 go get github.com/go-dev-auth/go-dev-auth
 ```
 
+> **Status: pre-1.0, in production use.** The library runs in production in a real automation project on PostgreSQL, using the full feature set. It is still pre-1.0, so the public API may change between minor versions — pin an exact version. See [storage adapters](#storage-adapters) for exactly which backends have been verified in CI versus proven in the field.
+
 ## Features
 
 **Core**
@@ -116,7 +118,7 @@ All adapters are written against the same conformance suite (`storage/storagetes
 **What has actually been executed, as of this revision:**
 
 - **SQLite** — the full conformance suite and a complete HTTP auth flow run against a real SQLite database in CI on every push. Verified.
-- **PostgreSQL** — the whole library (all plugins, migrations, the full auth flow) is running in a real application on live PostgreSQL. Field-proven by an early adopter; the automated conformance suite is not yet wired to run against Postgres in CI, so treat that as the remaining gap rather than the dialect being unexercised.
+- **PostgreSQL** — **running in production.** The whole library (all plugins, migrations, the full auth flow) is deployed in a real automation project on live PostgreSQL. Field-proven; the one remaining gap is automated, not functional: the `storagetest` conformance suite is not yet wired to run against Postgres in CI, so a future regression there would not be caught automatically.
 - **MySQL** — the dialect's generated SQL is covered by unit tests but has not been run against a live MySQL server. Beta; report anything you hit.
 - **MongoDB** — exercised against an in-house wire-protocol test double, not a live `mongod`. Beta.
 
