@@ -317,8 +317,9 @@ func TestCreateUserIsNotAValidationOracle(t *testing.T) {
 }
 
 // TestCreateUserRejectsUnknownRoleWhenConstrained pins the role
-// allow-list: a typo like "enginer" would otherwise create an account
-// silently locked out of every route.
+// allow-list: a role outside it — a typo, or one carried over from
+// another system — would otherwise create an account silently locked out
+// of every route.
 func TestCreateUserRejectsUnknownRoleWhenConstrained(t *testing.T) {
 	plugin := admin.New(admin.Options{Roles: []string{"engineer", "support"}})
 	env := plugintest.New(t, plugin)
@@ -329,7 +330,7 @@ func TestCreateUserRejectsUnknownRoleWhenConstrained(t *testing.T) {
 	}
 
 	res, body := env.POST("/admin/create-user", map[string]any{
-		"email": "typo@example.com", "password": "password123", "role": "enginer",
+		"email": "typo@example.com", "password": "password123", "role": "superuser",
 	})
 	env.RequireErrorCode(res, body, http.StatusBadRequest, "INVALID_ROLE")
 

@@ -30,10 +30,10 @@ changes will require a major version.
   address is a user who can never receive a password reset. It now calls
   the same email and password validation as the public sign-up path.
   `set-role` and create-user also validate the role against an optional
-  `Options.Roles` allow-list, closing the typo hole where `enginer`
-  silently created an account locked out of every route. The admin check
-  still runs first, so a non-admin is refused before any validation and
-  cannot use the endpoint as a validity oracle.
+  `Options.Roles` allow-list, closing the hole where a mistyped or
+  foreign role silently created an account locked out of every route.
+  The admin check still runs first, so a non-admin is refused before any
+  validation and cannot use the endpoint as a validity oracle.
 - A repo-wide sweep for the same class fixed three more account-creation
   and credential paths that skipped the library's own rules:
   `admin.set-user-password` now validates the new password; `magiclink`

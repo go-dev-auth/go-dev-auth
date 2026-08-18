@@ -26,8 +26,8 @@ type Options struct {
 	// set-role will accept. DefaultRole and AdminRoles are always
 	// allowed and need not be repeated here. Leave it empty to allow any
 	// role string (the previous behaviour) — but setting it closes the
-	// typo hole where "enginer" silently creates an account locked out of
-	// every route.
+	// hole where a mistyped or foreign role value silently creates an
+	// account locked out of every route.
 	Roles []string
 	// AdminUserIDs always have admin privileges regardless of role.
 	AdminUserIDs []string
