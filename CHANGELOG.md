@@ -10,6 +10,18 @@ Pre-1.0: the public API may still change. Once tagged v1, breaking
 changes will require a major version.
 
 ### Security
+- `admin`: **free-form update maps are no longer a side door around
+  validation.** `update-user` wrote its `data` map onto the user record
+  with only `id` stripped, so it accepted what its siblings refused —
+  `set-role` rejects an unknown role while `update-user` set it on the
+  same user, and `create-user` rejects a malformed address while
+  `update-user` accepted one. Sweeping for the same shape found a second
+  instance: `create-user` validated its `email` parameter and then merged
+  `data` over the top, so `data.email` could reinstate the address the
+  parameter had just refused. Both now run the same field rules, and a
+  dedicated parameter wins over the same key in `data`. Admin-only, so
+  not a privilege-escalation path, but an endpoint that accepts what its
+  sibling refuses is a trap for anyone scripting against the API.
 - `admin`: **create-user now enforces the library's own credential
   rules.** It previously validated only that the e-mail was non-empty,
   so it accepted `not-an-email` with the password `123`. With public

@@ -254,6 +254,33 @@ func (p *Plugin) mapUserWriteError(err error) error {
 	}
 }
 
+// validateUserData applies the library's field rules to a free-form
+// admin update map. Only fields that have a rule elsewhere are checked;
+// anything else (application-defined columns) passes through, and the
+// storage adapter still rejects columns the schema does not declare.
+func (p *Plugin) validateUserData(data map[string]any) error {
+	if raw, ok := data["email"]; ok {
+		email, ok := raw.(string)
+		if !ok {
+			return godevauth.ErrInvalidEmail
+		}
+		if err := p.auth.ValidateEmail(email); err != nil {
+			return err
+		}
+	}
+	if raw, ok := data["role"]; ok {
+		role, ok := raw.(string)
+		if !ok {
+			return godevauth.NewAPIError(http.StatusBadRequest, "INVALID_ROLE",
+				"Role must be a string")
+		}
+		if err := p.validateRole(role); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (p *Plugin) audit(c *godevauth.Ctx, sd *godevauth.SessionData, e godevauth.Event) {
 	if sd != nil {
 		if e.ActorID == "" {
@@ -315,6 +342,16 @@ func (p *Plugin) handleCreateUser(c *godevauth.Ctx) error {
 	if err := p.validateRole(role); err != nil {
 		return err
 	}
+	// The free-form data map must not be a side door around the checks
+	// above: a malformed address smuggled in as data.email would
+	// otherwise overwrite the validated one on the way to storage.
+	if err := p.validateUserData(extra); err != nil {
+		return err
+	}
+	// Fields with a dedicated parameter win over the same key in data, so
+	// there is one obvious answer when both are supplied. role already
+	// behaved this way; email now does too.
+	delete(extra, "email")
 	extra["role"] = role
 	if _, err := p.auth.FindUserByEmail(ctx, body.Email); err == nil {
 		return godevauth.ErrUserAlreadyExists
@@ -514,6 +551,16 @@ func (p *Plugin) handleUpdateUser(c *godevauth.Ctx) error {
 		return godevauth.ErrInvalidBody
 	}
 	delete(body.Data, "id")
+	// update-user is a generic setter, but "generic" must not mean
+	// "unvalidated": a field written here is held to the same rule as the
+	// dedicated endpoint for it. Without this, set-role refuses an unknown
+	// role while update-user quietly writes it onto the same user, and
+	// create-user refuses a malformed address while update-user accepts
+	// it — the exact inconsistency someone scripting against the API
+	// falls into.
+	if err := p.validateUserData(body.Data); err != nil {
+		return err
+	}
 	user, err := p.auth.UpdateUserRecord(c.Context(), body.UserID, body.Data)
 	if err != nil {
 		return p.mapUserWriteError(err)

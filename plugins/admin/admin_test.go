@@ -362,3 +362,102 @@ func TestSetUserPasswordEnforcesRules(t *testing.T) {
 	})
 	env.RequireStatus(res, body, http.StatusOK)
 }
+
+// TestUpdateUserCannotBypassSiblingValidation reproduces a downstream
+// report: update-user wrote its data map straight onto the record with
+// only "id" stripped, so it bypassed the rules its siblings enforce.
+// The proof was two pairs — set-role refuses "superuser" but update-user
+// set it on the same user; create-user refuses "not-an-email" but
+// update-user accepted it. An endpoint that accepts what its sibling
+// refuses is a trap for anyone scripting against the API.
+func TestUpdateUserCannotBypassSiblingValidation(t *testing.T) {
+	plugin := admin.New(admin.Options{Roles: []string{"engineer", "support"}})
+	env := plugintest.New(t, plugin)
+	root := env.SignUp("root@example.com", "password123")
+	if _, err := env.Auth.UpdateUserRecord(context.Background(), root.ID,
+		map[string]any{"role": "admin"}); err != nil {
+		t.Fatal(err)
+	}
+
+	res, body := env.POST("/admin/create-user", map[string]any{
+		"email": "target@example.com", "password": "password123", "role": "engineer",
+	})
+	env.RequireStatus(res, body, http.StatusOK)
+	target, _ := body["user"].(map[string]any)
+	id, _ := target["id"].(string)
+
+	// set-role refuses an unknown role...
+	res, body = env.POST("/admin/set-role", map[string]any{"userId": id, "role": "superuser"})
+	env.RequireErrorCode(res, body, http.StatusBadRequest, "INVALID_ROLE")
+	// ...so update-user must refuse it too, on the same user.
+	res, body = env.POST("/admin/update-user", map[string]any{
+		"userId": id, "data": map[string]any{"role": "superuser"},
+	})
+	env.RequireErrorCode(res, body, http.StatusBadRequest, "INVALID_ROLE")
+
+	// create-user refuses a malformed address, so update-user must too.
+	res, body = env.POST("/admin/update-user", map[string]any{
+		"userId": id, "data": map[string]any{"email": "not-an-email"},
+	})
+	env.RequireErrorCode(res, body, http.StatusBadRequest, "INVALID_EMAIL")
+
+	// A non-string in a validated field is rejected, not coerced.
+	res, body = env.POST("/admin/update-user", map[string]any{
+		"userId": id, "data": map[string]any{"role": 42},
+	})
+	env.RequireErrorCode(res, body, http.StatusBadRequest, "INVALID_ROLE")
+
+	// Legitimate updates still work, including unvalidated fields.
+	res, body = env.POST("/admin/update-user", map[string]any{
+		"userId": id,
+		"data":   map[string]any{"role": "support", "name": "Renamed"},
+	})
+	env.RequireStatus(res, body, http.StatusOK)
+	updated, _ := body["user"].(map[string]any)
+	if updated["name"] != "Renamed" {
+		t.Fatalf("name = %#v", updated["name"])
+	}
+}
+
+// TestCreateUserDataMapIsNotASideDoor pins the second instance of the
+// same class, found while sweeping for siblings of the update-user
+// report: create-user validated its "email" parameter but then merged
+// the free-form data map over the top, so data.email could reinstate a
+// malformed address that the parameter had just refused.
+func TestCreateUserDataMapIsNotASideDoor(t *testing.T) {
+	plugin := admin.New(admin.Options{Roles: []string{"engineer"}})
+	env := plugintest.New(t, plugin)
+	root := env.SignUp("root@example.com", "password123")
+	if _, err := env.Auth.UpdateUserRecord(context.Background(), root.ID,
+		map[string]any{"role": "admin"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// a malformed address smuggled through data is refused
+	res, body := env.POST("/admin/create-user", map[string]any{
+		"email": "ok@example.com", "password": "password123", "role": "engineer",
+		"data": map[string]any{"email": "not-an-email"},
+	})
+	env.RequireErrorCode(res, body, http.StatusBadRequest, "INVALID_EMAIL")
+
+	// an unknown role smuggled through data is refused
+	res, body = env.POST("/admin/create-user", map[string]any{
+		"email": "ok2@example.com", "password": "password123", "role": "engineer",
+		"data": map[string]any{"role": "superuser"},
+	})
+	env.RequireErrorCode(res, body, http.StatusBadRequest, "INVALID_ROLE")
+
+	// the dedicated parameters win over the same keys in data
+	res, body = env.POST("/admin/create-user", map[string]any{
+		"email": "wins@example.com", "password": "password123", "role": "engineer",
+		"data": map[string]any{"email": "other@example.com"},
+	})
+	env.RequireStatus(res, body, http.StatusOK)
+	created, _ := body["user"].(map[string]any)
+	if created["email"] != "wins@example.com" {
+		t.Fatalf("data.email overrode the validated parameter: %#v", created["email"])
+	}
+	if created["role"] != "engineer" {
+		t.Fatalf("role = %#v", created["role"])
+	}
+}
