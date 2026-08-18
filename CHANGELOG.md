@@ -9,6 +9,38 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Pre-1.0: the public API may still change. Once tagged v1, breaking
 changes will require a major version.
 
+### Security
+- `admin`: **create-user now enforces the library's own credential
+  rules.** It previously validated only that the e-mail was non-empty,
+  so it accepted `not-an-email` with the password `123`. With public
+  sign-up disabled, create-user is the only account-creation path, so
+  every account could bypass every credential rule — and a typo'd
+  address is a user who can never receive a password reset. It now calls
+  the same email and password validation as the public sign-up path.
+  `set-role` and create-user also validate the role against an optional
+  `Options.Roles` allow-list, closing the typo hole where `enginer`
+  silently created an account locked out of every route. The admin check
+  still runs first, so a non-admin is refused before any validation and
+  cannot use the endpoint as a validity oracle.
+- A repo-wide sweep for the same class fixed three more account-creation
+  and credential paths that skipped the library's own rules:
+  `admin.set-user-password` now validates the new password; `magiclink`
+  sign-in validates the e-mail before a link is sent (with sign-up on, a
+  malformed address would otherwise become an unreachable account);
+  `organization.invite-member` validates the e-mail and constrains the
+  role to the known set, exactly as `update-member-role` already did — a
+  typo'd role was previously written to the invitation and copied onto
+  the member on accept, silently locking them out of every role-gated
+  route. Social sign-in now refuses to create a user when the provider
+  returns no e-mail address instead of persisting an empty one.
+
+### Added
+- `Auth.ValidateEmail` and `Auth.ValidatePassword` expose the sign-up
+  path's credential checks so plugins that create accounts enforce the
+  same rules. Previously these were unexported, which is why the admin
+  plugin could not reuse them.
+- `admin.Options.Roles`: an optional allow-list of accepted role values.
+
 ## [0.1.1] - 2026-08-12
 
 CI only — no library code changed, so nothing a `go get` consumer

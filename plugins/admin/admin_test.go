@@ -255,3 +255,110 @@ func TestAdminUserIDsGrantAccess(t *testing.T) {
 		t.Fatal("the configured bootstrap ID was not treated as an administrator")
 	}
 }
+
+// TestCreateUserEnforcesCredentialRules is the regression test for the
+// live bug found on a downstream project: admin create-user validated
+// only that the e-mail was non-empty. It accepted "not-an-email" with the
+// password "123" and returned 200. With public sign-up disabled,
+// create-user is the only way accounts are made, so every account was
+// bypassing every credential rule — a typo'd address is a user who can
+// never receive a password reset.
+func TestCreateUserEnforcesCredentialRules(t *testing.T) {
+	env, _ := newEnv(t)
+
+	// malformed e-mail is rejected with the library's own error, exactly
+	// as the public sign-up path would reject it.
+	res, body := env.POST("/admin/create-user", map[string]any{
+		"email": "not-an-email", "password": "password123",
+	})
+	env.RequireErrorCode(res, body, http.StatusBadRequest, "INVALID_EMAIL")
+
+	// too-short password is rejected too.
+	res, body = env.POST("/admin/create-user", map[string]any{
+		"email": "ok@example.com", "password": "123",
+	})
+	env.RequireErrorCode(res, body, http.StatusBadRequest, "PASSWORD_TOO_SHORT")
+
+	// a valid pair still works.
+	res, body = env.POST("/admin/create-user", map[string]any{
+		"email": "good@example.com", "password": "password123",
+	})
+	env.RequireStatus(res, body, http.StatusOK)
+}
+
+// TestCreateUserIsNotAValidationOracle pins the ordering the downstream
+// author had to correct by hand: the admin check must run before any
+// input validation, so a stranger cannot probe which e-mails are valid.
+// A non-admin must be refused with an authorization error, never with
+// "Invalid email".
+func TestCreateUserIsNotAValidationOracle(t *testing.T) {
+	env, _ := newEnv(t)
+
+	member := env.Client()
+	member.SignUp("member@example.com", "password123")
+	res, body := member.Do(http.MethodPost, "/admin/create-user",
+		map[string]any{"email": "not-an-email", "password": "123"})
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("non-admin: status %d, want 403", res.StatusCode)
+	}
+	if code, _ := body["code"].(string); code == "INVALID_EMAIL" || code == "PASSWORD_TOO_SHORT" {
+		t.Fatalf("validation ran before the admin check — leaks validity to a non-admin: %v", body)
+	}
+
+	anon := env.Client()
+	res, body = anon.Do(http.MethodPost, "/admin/create-user",
+		map[string]any{"email": "not-an-email", "password": "123"})
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("anonymous: status %d, want 401", res.StatusCode)
+	}
+	if code, _ := body["code"].(string); code == "INVALID_EMAIL" || code == "PASSWORD_TOO_SHORT" {
+		t.Fatalf("validation ran before the admin check for an anonymous caller: %v", body)
+	}
+}
+
+// TestCreateUserRejectsUnknownRoleWhenConstrained pins the role
+// allow-list: a typo like "enginer" would otherwise create an account
+// silently locked out of every route.
+func TestCreateUserRejectsUnknownRoleWhenConstrained(t *testing.T) {
+	plugin := admin.New(admin.Options{Roles: []string{"engineer", "support"}})
+	env := plugintest.New(t, plugin)
+	root := env.SignUp("root@example.com", "password123")
+	if _, err := env.Auth.UpdateUserRecord(context.Background(), root.ID,
+		map[string]any{"role": "admin"}); err != nil {
+		t.Fatal(err)
+	}
+
+	res, body := env.POST("/admin/create-user", map[string]any{
+		"email": "typo@example.com", "password": "password123", "role": "enginer",
+	})
+	env.RequireErrorCode(res, body, http.StatusBadRequest, "INVALID_ROLE")
+
+	// the correctly spelled role is accepted.
+	res, body = env.POST("/admin/create-user", map[string]any{
+		"email": "eng@example.com", "password": "password123", "role": "engineer",
+	})
+	env.RequireStatus(res, body, http.StatusOK)
+}
+
+// TestSetUserPasswordEnforcesRules is the sibling of the create-user
+// gap: an admin setting a user's password must be held to the same
+// length rule as every other password path.
+func TestSetUserPasswordEnforcesRules(t *testing.T) {
+	env, _ := newEnv(t)
+	res, body := env.POST("/admin/create-user", map[string]any{
+		"email": "target@example.com", "password": "password123",
+	})
+	env.RequireStatus(res, body, http.StatusOK)
+	target, _ := body["user"].(map[string]any)
+	id, _ := target["id"].(string)
+
+	res, body = env.POST("/admin/set-user-password", map[string]any{
+		"userId": id, "newPassword": "123",
+	})
+	env.RequireErrorCode(res, body, http.StatusBadRequest, "PASSWORD_TOO_SHORT")
+
+	res, body = env.POST("/admin/set-user-password", map[string]any{
+		"userId": id, "newPassword": "a-good-password",
+	})
+	env.RequireStatus(res, body, http.StatusOK)
+}

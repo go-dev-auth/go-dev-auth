@@ -351,6 +351,15 @@ func (a *Auth) resolveOAuthUser(ctx context.Context, providerID string, profile 
 			"Sign up is disabled")
 	}
 
+	// A provider that returns no e-mail (for example GitHub when the
+	// address is private) would otherwise create a user with an empty
+	// address — one who can never be found by e-mail or receive a reset.
+	// Refuse rather than persist that.
+	if profile.Email == "" {
+		return nil, false, NewAPIError(http.StatusBadRequest, "PROVIDER_NO_EMAIL",
+			"The provider did not return an email address for this account")
+	}
+
 	// new user
 	user, err := a.store.CreateUser(ctx, &storage.User{
 		Name:          profile.Name,
