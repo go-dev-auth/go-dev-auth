@@ -9,6 +9,36 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Pre-1.0: the public API may still change. Once tagged v1, breaking
 changes will require a major version.
 
+### Fixed
+- `sqlstore`: **the migration advisory lock is now session-pinned.**
+  PostgreSQL's `pg_advisory_lock` and MySQL's `GET_LOCK` are scoped to
+  a database session, but both halves were issued through the
+  connection pool — the lock could land on one connection and the
+  unlock on another, leaving the lock held by an idle pooled connection
+  and blocking every later `Migrate` (Postgres waits forever). Lock and
+  unlock now run on a single pinned `*sql.Conn` for the lock's
+  lifetime. SQLite was never affected.
+
+### Added
+- **Real-server conformance in CI.** The `storagetest` contract,
+  migration idempotence and the full HTTP auth flow now run against
+  real PostgreSQL and MySQL servers on every push, alongside the
+  existing SQLite leg (`storage/sqlstore/integration`, driven by
+  `POSTGRES_DSN` / `MYSQL_DSN`). In CI, `REQUIRE_DSN=1` turns a missing
+  database into a failure so a leg cannot pass by silently skipping.
+  MySQL moves from "generated SQL asserted by unit tests" to
+  "CI-verified against a live server".
+- **`docs/security-model.md`** makes the threat model explicit: the
+  four attackers the design answers to, the reasoning behind each
+  decision, and a table mapping every security claim to the test that
+  pins it. `SECURITY.md` gains a direct disclosure contact.
+- **Two new runnable examples.** `examples/chi` shows the library
+  mounted in a chi router with `GetSession` as ordinary middleware;
+  `examples/fullapp` is a complete small web app — server-rendered
+  pages, protected dashboard, password reset end to end — on
+  persistent SQLite. Both are separate modules, so the core keeps zero
+  dependencies, and both are built in CI.
+
 ### Security
 - `admin`: **free-form update maps are no longer a side door around
   validation.** `update-user` wrote its `data` map onto the user record

@@ -1,12 +1,22 @@
 # go-dev-auth
 
+[![CI](https://github.com/go-dev-auth/go-dev-auth/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/go-dev-auth/go-dev-auth/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/go-dev-auth/go-dev-auth.svg)](https://pkg.go.dev/github.com/go-dev-auth/go-dev-auth)
+[![Go Report Card](https://goreportcard.com/badge/github.com/go-dev-auth/go-dev-auth)](https://goreportcard.com/report/github.com/go-dev-auth/go-dev-auth)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+The CI badge covers the whole matrix on every push: build and tests on
+the oldest supported and current Go, the race detector, lint, a fuzz
+pass over the attacker-facing parsers, and the storage conformance
+suite against **real SQLite, PostgreSQL and MySQL servers**.
+
 A comprehensive, framework-agnostic authentication library for Go, modeled after [better-auth](https://github.com/better-auth/better-auth). Email & password, social sign-on, sessions, account linking, two-factor auth, magic links, organizations, admin tooling, API keys and JWT — with **zero external dependencies** (pure standard library).
 
 ```
 go get github.com/go-dev-auth/go-dev-auth
 ```
 
-> **Status: pre-1.0, in production use.** The library runs in production in a real automation project on PostgreSQL, using the full feature set. It is still pre-1.0, so the public API may change between minor versions — pin an exact version. See [storage adapters](#storage-adapters) for exactly which backends have been verified in CI versus proven in the field.
+> **Status: pre-1.0, in production use, heading to v1.0.** The library runs in production in a real automation project on PostgreSQL, using the full feature set. Releases follow [SemVer](https://semver.org): while pre-1.0 the public API may still change between minor versions (pin an exact version); v1.0 freezes it, and from then on breaking changes require a major version. The remaining v1.0 gates are runnable examples, field mileage on the newly automated MySQL leg, and a third-party security review. See [storage adapters](#storage-adapters) for exactly which backends are verified where, and [docs/security-model.md](docs/security-model.md) for the threat model.
 
 ## Features
 
@@ -118,11 +128,11 @@ All adapters are written against the same conformance suite (`storage/storagetes
 **What has actually been executed, as of this revision:**
 
 - **SQLite** — the full conformance suite and a complete HTTP auth flow run against a real SQLite database in CI on every push. Verified.
-- **PostgreSQL** — **running in production.** The whole library (all plugins, migrations, the full auth flow) is deployed in a real automation project on live PostgreSQL. Field-proven; the one remaining gap is automated, not functional: the `storagetest` conformance suite is not yet wired to run against Postgres in CI, so a future regression there would not be caught automatically.
-- **MySQL** — the dialect's generated SQL is covered by unit tests but has not been run against a live MySQL server. Beta; report anything you hit.
+- **PostgreSQL** — **running in production** (a real automation project uses the whole library on live PostgreSQL), *and* the conformance suite, migration idempotence and the full HTTP auth flow now run against a real PostgreSQL server in CI on every push. Field-proven and regression-guarded.
+- **MySQL** — the same CI job runs the conformance suite, migrations and the full auth flow against a real MySQL 8 server on every push. CI-verified; no field mileage yet, so report anything you hit.
 - **MongoDB** — exercised against an in-house wire-protocol test double, not a live `mongod`. Beta.
 
-This section gets simpler the day CI runs the conformance suite against real Postgres, MySQL and Mongo.
+The CI legs cannot pass vacuously: the environment sets `REQUIRE_DSN=1`, which turns a missing database into a test failure rather than a skip.
 
 If you write your own adapter, run that suite against it:
 
