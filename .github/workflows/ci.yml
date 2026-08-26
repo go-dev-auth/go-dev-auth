@@ -44,7 +44,13 @@ jobs:
           # baseline issues do not fail unrelated pull requests.
           fetch-depth: 2
       - uses: actions/setup-go@v6
-        with: { go-version: stable }
+        with:
+          # Pinned below stable: golangci-lint v2.12.2's embedded
+          # typechecker cannot parse the Go 1.27 stdlib (generic methods
+          # in math/rand/v2 → "method must have no type parameters").
+          # Bump to stable once a golangci-lint release built with Go
+          # 1.27 ships.
+          go-version: '1.26'
       # golangci-lint is installed and run from a plain shell step rather
       # than golangci-lint-action. That action's own action.yml still
       # declares `using: node20`, so it prints a Node 20 deprecation
