@@ -5,7 +5,7 @@
 // database needs a driver. Nothing here is imported by the library.
 module github.com/go-dev-auth/go-dev-auth/storage/sqlstore/integration
 
-go 1.24.0
+go 1.22
 
 // The Postgres and MySQL drivers are pinned to their newest
 // zero-dependency releases (mysql v1.8.0 grew a curve25519 dependency
