@@ -41,30 +41,7 @@ go get github.com/go-dev-auth/go-dev-auth
 - `jwt` — EdDSA-signed JWTs + JWKS endpoint
 - `bearer` — Authorization header auth for non-browser clients
 
-## How it compares
 
-Four honest options for auth in Go, and where each fits. Corrections
-welcome — open an issue if a row misrepresents a project.
-
-| | **go-dev-auth** | [Limen](https://github.com/thecodearcher/limen) | [Authboss](https://github.com/aarondl/authboss) | [Ory Kratos](https://github.com/ory/kratos) |
-|---|---|---|---|---|
-| Model | Embedded library, `net/http` | Embedded library, `net/http` | Embedded library, HTML-form oriented | Separate identity **server** you deploy and call over HTTP |
-| Core dependencies | **Zero** — standard library only | Core + per-plugin modules; the storage adapter brings [GORM](https://gorm.io) | Small; you implement its storage interfaces | Not applicable — it's a service with its own runtime and database |
-| better-auth-style API | Yes — same endpoint shapes, `salt:key` scrypt hash compatibility | Inspired by better-auth; own API | No | No |
-| Email/password, social OIDC | Yes / Yes (PKCE, 11 providers + declarative custom) | Yes / Yes | Yes / via modules | Yes / Yes |
-| 2FA, magic links | TOTP + email OTP + backup codes; magic links | TOTP + backup codes | TOTP, one-time codes | TOTP, WebAuthn/passkeys, recovery codes |
-| Organizations, admin API, API keys, JWT/JWKS | Yes — all four as plugins | Not yet | No | Admin API yes; orgs/API keys are in Ory's commercial tier |
-| Storage | Postgres, MySQL, SQLite, MongoDB, in-memory — conformance suite runs against **real servers in CI** | GORM adapter (databases GORM supports) | Bring your own (implement interfaces) | Its own database (Postgres et al.), managed by the server |
-| Rate limiting & brute-force protection built in | Yes, on by default | Session/security primitives in core | [Explicitly left to you](https://github.com/aarondl/authboss#use-case-driven-development) | Yes |
-| Threat model written down | [docs/security-model.md](docs/security-model.md), claim-to-test table | No | No | Extensive docs; audited ecosystem |
-| Production maturity | Pre-1.0; one production deployment, honestly reported | New (2026) | Years of production use across many sites | The most battle-tested of the four; also the most operationally heavy |
-
-The one-line version: choose **Kratos** if you want an identity server
-and can run one; **Authboss** if you want a long-established library
-and don't mind wiring storage and protections yourself; **Limen** if
-you want plugin-per-module composition on GORM; **go-dev-auth** if you
-want better-auth's batteries-included shape, a zero-dependency core,
-and security claims tied to tests.
 
 ## Quick start
 
