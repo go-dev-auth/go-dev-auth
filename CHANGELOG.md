@@ -9,7 +9,49 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Pre-1.0: the public API may still change. Once tagged v1, breaking
 changes will require a major version.
 
+### Fixed
+- `sqlstore`: **the migration advisory lock is now session-pinned.**
+  PostgreSQL's `pg_advisory_lock` and MySQL's `GET_LOCK` are scoped to
+  a database session, but both halves were issued through the
+  connection pool — the lock could land on one connection and the
+  unlock on another, leaving the lock held by an idle pooled connection
+  and blocking every later `Migrate` (Postgres waits forever). Lock and
+  unlock now run on a single pinned `*sql.Conn` for the lock's
+  lifetime. SQLite was never affected.
+
+### Added
+- **Real-server conformance in CI.** The `storagetest` contract,
+  migration idempotence and the full HTTP auth flow now run against
+  real PostgreSQL and MySQL servers on every push, alongside the
+  existing SQLite leg (`storage/sqlstore/integration`, driven by
+  `POSTGRES_DSN` / `MYSQL_DSN`). In CI, `REQUIRE_DSN=1` turns a missing
+  database into a failure so a leg cannot pass by silently skipping.
+  MySQL moves from "generated SQL asserted by unit tests" to
+  "CI-verified against a live server".
+- **`docs/security-model.md`** makes the threat model explicit: the
+  four attackers the design answers to, the reasoning behind each
+  decision, and a table mapping every security claim to the test that
+  pins it. `SECURITY.md` gains a direct disclosure contact.
+- **Two new runnable examples.** `examples/chi` shows the library
+  mounted in a chi router with `GetSession` as ordinary middleware;
+  `examples/fullapp` is a complete small web app — server-rendered
+  pages, protected dashboard, password reset end to end — on
+  persistent SQLite. Both are separate modules, so the core keeps zero
+  dependencies, and both are built in CI.
+
 ### Security
+- `admin`: **free-form update maps are no longer a side door around
+  validation.** `update-user` wrote its `data` map onto the user record
+  with only `id` stripped, so it accepted what its siblings refused —
+  `set-role` rejects an unknown role while `update-user` set it on the
+  same user, and `create-user` rejects a malformed address while
+  `update-user` accepted one. Sweeping for the same shape found a second
+  instance: `create-user` validated its `email` parameter and then merged
+  `data` over the top, so `data.email` could reinstate the address the
+  parameter had just refused. Both now run the same field rules, and a
+  dedicated parameter wins over the same key in `data`. Admin-only, so
+  not a privilege-escalation path, but an endpoint that accepts what its
+  sibling refuses is a trap for anyone scripting against the API.
 - `admin`: **create-user now enforces the library's own credential
   rules.** It previously validated only that the e-mail was non-empty,
   so it accepted `not-an-email` with the password `123`. With public
@@ -18,10 +60,10 @@ changes will require a major version.
   address is a user who can never receive a password reset. It now calls
   the same email and password validation as the public sign-up path.
   `set-role` and create-user also validate the role against an optional
-  `Options.Roles` allow-list, closing the typo hole where `enginer`
-  silently created an account locked out of every route. The admin check
-  still runs first, so a non-admin is refused before any validation and
-  cannot use the endpoint as a validity oracle.
+  `Options.Roles` allow-list, closing the hole where a mistyped or
+  foreign role silently created an account locked out of every route.
+  The admin check still runs first, so a non-admin is refused before any
+  validation and cannot use the endpoint as a validity oracle.
 - A repo-wide sweep for the same class fixed three more account-creation
   and credential paths that skipped the library's own rules:
   `admin.set-user-password` now validates the new password; `magiclink`

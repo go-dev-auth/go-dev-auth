@@ -2,6 +2,7 @@ package sqlstore
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"sort"
@@ -626,22 +627,59 @@ func (a *Adapter) transactionalDDL() bool {
 // safe to call. Where the engine has no advisory lock, it degrades to a
 // no-op — SQLite is single-writer already, and a custom engine gets best
 // effort rather than a hard failure.
+//
+// Advisory locks are session-scoped, so both halves must run on the same
+// database connection. Issued through the pool, the lock would land on
+// one connection and the unlock on another: the release silently fails
+// and the lock stays held by an idle pooled connection, blocking every
+// later Migrate — pg_advisory_lock waits forever. A single *sql.Conn is
+// pinned for the lock's lifetime instead. When the adapter is already
+// inside a transaction there is exactly one session, so a.q is correct
+// as-is.
 func (a *Adapter) lockForMigration(ctx context.Context) (func(), error) {
 	noop := func() {}
-	switch a.dialect.Name() {
+	dialect := a.dialect.Name()
+	if dialect != "postgres" && dialect != "mysql" {
+		return noop, nil
+	}
+
+	// One session for lock and unlock. Only fall back to a.q when there
+	// is no pool to pin from, which means a.q is a transaction and
+	// therefore already a single session.
+	var session interface {
+		ExecContext(context.Context, string, ...any) (sql.Result, error)
+		QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	} = a.q
+	release := noop
+	if a.db != nil {
+		conn, err := a.db.Conn(ctx)
+		if err != nil {
+			return noop, fmt.Errorf("sqlstore: pinning a connection for the migration lock: %w", err)
+		}
+		session = conn
+		// Close returns the connection to the pool. If the unlock ever
+		// fails the connection is broken, and the pool discards broken
+		// connections — either way the lock dies with the session.
+		release = func() { _ = conn.Close() }
+	}
+
+	switch dialect {
 	case "postgres":
-		if _, err := a.q.ExecContext(ctx, "SELECT pg_advisory_lock($1)", migrationLockKey); err != nil {
+		if _, err := session.ExecContext(ctx, "SELECT pg_advisory_lock($1)", migrationLockKey); err != nil {
+			release()
 			return noop, fmt.Errorf("sqlstore: acquiring migration lock: %w", err)
 		}
 		return func() {
-			_, _ = a.q.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", migrationLockKey)
+			_, _ = session.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", migrationLockKey)
+			release()
 		}, nil
-	case "mysql":
+	default: // mysql
 		// GET_LOCK blocks up to the timeout and returns 1 on success, 0 on
 		// timeout, NULL on error. A 60s ceiling keeps a wedged migration
 		// from hanging a boot forever.
-		rows, err := a.q.QueryContext(ctx, "SELECT GET_LOCK(?, 60)", migrationLockName)
+		rows, err := session.QueryContext(ctx, "SELECT GET_LOCK(?, 60)", migrationLockName)
 		if err != nil {
+			release()
 			return noop, fmt.Errorf("sqlstore: acquiring migration lock: %w", err)
 		}
 		var res *int
@@ -650,13 +688,13 @@ func (a *Adapter) lockForMigration(ctx context.Context) (func(), error) {
 		}
 		_ = rows.Close()
 		if res == nil || *res != 1 {
+			release()
 			return noop, errors.New("sqlstore: timed out waiting for the migration lock")
 		}
 		return func() {
-			_, _ = a.q.ExecContext(context.Background(), "SELECT RELEASE_LOCK(?)", migrationLockName)
+			_, _ = session.ExecContext(context.Background(), "SELECT RELEASE_LOCK(?)", migrationLockName)
+			release()
 		}, nil
-	default:
-		return noop, nil
 	}
 }
 

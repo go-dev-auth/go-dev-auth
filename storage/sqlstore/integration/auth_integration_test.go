@@ -40,7 +40,16 @@ func newAuthEnv(t *testing.T, mutate func(*godevauth.Config)) (*authEnv, *testCl
 	t.Helper()
 	db := openSQLite(t)
 	t.Cleanup(func() { db.Close() })
-	store := sqlstore.New(db, sqlstore.SQLite, nil)
+	return newAuthEnvOn(t, db, sqlstore.SQLite, mutate)
+}
+
+// newAuthEnvOn is newAuthEnv over a caller-supplied database, so the
+// same full HTTP flow runs unchanged against Postgres and MySQL when a
+// DSN is provided (see conformance_dsn_test.go). The caller owns the
+// db's lifetime.
+func newAuthEnvOn(t *testing.T, db *sql.DB, dialect sqlstore.Dialect, mutate func(*godevauth.Config)) (*authEnv, *testClient) {
+	t.Helper()
+	store := sqlstore.New(db, dialect, nil)
 
 	cfg := godevauth.Config{
 		// BaseURL must be set before New (it is validated there);
