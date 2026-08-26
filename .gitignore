@@ -13,3 +13,8 @@ go.work.sum
 .idea/
 .vscode/
 .DS_Store
+
+# Example binaries and their local databases
+examples/chi/chi
+examples/fullapp/fullapp
+examples/fullapp/*.db*

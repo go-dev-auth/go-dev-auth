@@ -5,19 +5,25 @@
 Please do not open a public issue for security problems. Report them
 privately through GitHub's [private vulnerability
 reporting](https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing-information-about-vulnerabilities/privately-reporting-a-security-vulnerability)
-on this repository.
+on this repository, or by e-mail to the maintainer at
+<bisratlike@gmail.com> with "go-dev-auth security" in the subject.
 
 Include a description of the issue, the affected version, and a
 reproduction if you have one. Expect an acknowledgement within a few
-days and an assessment shortly after.
+days and an assessment shortly after. Good-faith research is welcome;
+reports will not be met with legal threats.
 
 ## Supported versions
 
-Pre-1.0, only the latest release receives fixes.
+The latest release receives fixes. Once 1.0 ships, the latest minor
+release of the current major version receives fixes.
 
 ## Security model
 
-What the library guarantees, and what it expects from you.
+The attacker model, the design decisions that follow from it, and how
+each claim is verified are documented in
+[docs/security-model.md](../docs/security-model.md). The summary below
+is what the library guarantees, and what it expects from you.
 
 ### Credentials
 - Passwords are hashed with scrypt (N=16384, r=16, p=1), the same

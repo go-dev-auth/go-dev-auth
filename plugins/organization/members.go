@@ -44,7 +44,7 @@ func (p *Plugin) handleInviteMember(c *godevauth.Ctx) error {
 			"You cannot invite a member as owner")
 	}
 	// Constrain the role to the known set, exactly as update-member-role
-	// does. Without this a typo like "membr" is written to the invitation
+	// does. Without this an unknown role is written to the invitation
 	// and copied onto the member on accept, where no requireRole check
 	// will ever match it — silently locking the member out of every
 	// role-gated route while still counting as a member.

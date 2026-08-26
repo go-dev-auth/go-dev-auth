@@ -2,7 +2,8 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
+    tags: ['v*']
   pull_request:
 
 permissions:
@@ -43,7 +44,13 @@ jobs:
           # baseline issues do not fail unrelated pull requests.
           fetch-depth: 2
       - uses: actions/setup-go@v6
-        with: { go-version: stable }
+        with:
+          # Pinned below stable: golangci-lint v2.12.2's embedded
+          # typechecker cannot parse the Go 1.27 stdlib (generic methods
+          # in math/rand/v2 → "method must have no type parameters").
+          # Bump to stable once a golangci-lint release built with Go
+          # 1.27 ships.
+          go-version: '1.26'
       # golangci-lint is installed and run from a plain shell step rather
       # than golangci-lint-action. That action's own action.yml still
       # declares `using: node20`, so it prints a Node 20 deprecation
@@ -79,19 +86,10 @@ jobs:
         # budget would be spent entirely on. Keep it under the run time.
         run: make fuzz FUZZTIME=20s FUZZMINIMIZETIME=3s
 
-  integration:
-    # Real-database tests. Today this means SQLite only — that is the
-    # honest scope, and the job name says so.
-    #
-    # An earlier revision of this file started postgres/mysql/mongo
-    # service containers and exported POSTGRES_DSN / MYSQL_DSN /
-    # MONGODB_URI. No Go file read any of them, so the job spun up three
-    # databases and tested none of them, while the README claimed all
-    # three backends passed the conformance suite. The containers are
-    # removed rather than left as decoration; they come back in the same
-    # commit that adds the drivers and the suites that use them.
-    # Tracking issue: "run storagetest against Postgres, MySQL, Mongo".
-    name: integration (SQLite)
+  conformance-sqlite:
+    # The SQLite leg keeps CGO for mattn/go-sqlite3 and also carries the
+    # Mongo wire-protocol double, which needs no server.
+    name: conformance (SQLite)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -106,3 +104,69 @@ jobs:
         # OP_MSG well enough to exercise the adapter's query building.
         # It cannot catch a server-behaviour difference.
         run: cd storage/mongostore && go test ./...
+      - name: Examples compile
+        # The examples are the onboarding path; a release where they do
+        # not build is a release with a broken front door. basic is
+        # covered by the core module's build; the two example modules
+        # build here because this job already has cgo for SQLite.
+        env:
+          CGO_ENABLED: '1'
+        run: |
+          (cd examples/chi && go vet ./ && go build ./)
+          (cd examples/fullapp && go vet ./ && go build ./)
+
+  conformance-postgres:
+    # The adapter contract, migration idempotence and the full HTTP auth
+    # flow against a real PostgreSQL server. REQUIRE_DSN=1 turns the
+    # local-development skip into a failure, so this job cannot go green
+    # because the container failed to start and nothing ran.
+    name: conformance (PostgreSQL)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: gda
+          POSTGRES_PASSWORD: gda
+          POSTGRES_DB: gda
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U gda"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with: { go-version: stable }
+      - name: Conformance suite, migrations and auth flow on PostgreSQL
+        env:
+          POSTGRES_DSN: postgres://gda:gda@localhost:5432/gda?sslmode=disable
+          REQUIRE_DSN: '1'
+        run: cd storage/sqlstore/integration && go test -run 'Postgres' -v ./...
+
+  conformance-mysql:
+    name: conformance (MySQL)
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: gda
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -pgda"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with: { go-version: stable }
+      - name: Conformance suite, migrations and auth flow on MySQL
+        # root, because the tests create and drop a throwaway database
+        # per adapter for isolation.
+        env:
+          MYSQL_DSN: root:gda@tcp(127.0.0.1:3306)/mysql
+          REQUIRE_DSN: '1'
+        run: cd storage/sqlstore/integration && go test -run 'MySQL' -v ./...

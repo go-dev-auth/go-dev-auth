@@ -963,7 +963,7 @@ var _ godevauth.SchemaPlugin = organization.New()
 
 // TestInviteMemberRejectsUnknownRole pins the sibling of the admin
 // create-user gap: invite-member must constrain the role to the same
-// known set that update-member-role enforces. A typo like "membr" would
+// known set that update-member-role enforces. An unknown role would
 // otherwise be written to the invitation and copied onto the member on
 // accept, where no requireRole check ever matches it — a member silently
 // locked out of every role-gated route. It also validates the address.
@@ -973,7 +973,7 @@ func TestInviteMemberRejectsUnknownRole(t *testing.T) {
 	orgID, _ := org["id"].(string)
 
 	res, body := env.POST("/organization/invite-member", map[string]any{
-		"email": "eng@example.com", "role": "membr", "organizationId": orgID,
+		"email": "eng@example.com", "role": "maintainer", "organizationId": orgID,
 	})
 	env.RequireErrorCode(res, body, http.StatusBadRequest, "INVALID_ROLE")
 
