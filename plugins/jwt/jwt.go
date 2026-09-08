@@ -64,6 +64,13 @@ type Plugin struct {
 	// leaving tokens signed by a key the JWKS endpoint never published.
 	keyMu   sync.Mutex
 	signing *signingKey
+
+	// pubKeys caches stored public keys by kid for verification. Public
+	// keys are not secret and never change for a kid, so a plain cache
+	// with a storage reload on miss lets Verify select the right key
+	// across rotations and instances.
+	pubMu   sync.RWMutex
+	pubKeys map[string]ed25519.PublicKey
 }
 
 // New builds the plugin.
@@ -276,12 +283,81 @@ func (p *Plugin) SignSession(ctx context.Context, sd *godevauth.SessionData) (st
 }
 
 // Verify verifies a token issued by this plugin and returns its claims.
+//
+// The verifying key is selected by the token's own kid, from every
+// stored public key — not just the one this process currently signs
+// with. Without that, a token signed before a key rotation, or signed
+// by another instance whose newest key this process has not cached,
+// failed to verify even though its key is still published at /jwks. The
+// iss and aud claims are checked too, so a token minted for a different
+// audience is rejected rather than merely accepted as well-formed.
 func (p *Plugin) Verify(ctx context.Context, token string) (crypto.Claims, error) {
-	key, err := p.loadOrCreateKey(ctx)
+	header, err := crypto.DecodeJWTHeader(token)
 	if err != nil {
 		return nil, err
 	}
-	return crypto.VerifyJWT(key.pub, token)
+	pub, err := p.publicKeyByKID(ctx, header.Kid)
+	if err != nil {
+		return nil, err
+	}
+	claims, err := crypto.VerifyJWT(pub, token)
+	if err != nil {
+		return nil, err
+	}
+	if iss, _ := claims["iss"].(string); iss != p.issuer() {
+		return nil, fmt.Errorf("jwt: issuer %q does not match %q", iss, p.issuer())
+	}
+	if !audienceContains(claims["aud"], p.audience()) {
+		return nil, errors.New("jwt: audience does not match this application")
+	}
+	return claims, nil
+}
+
+// publicKeyByKID resolves a stored public key by its id. Results are
+// cached (public keys are not secret and never change for a given kid),
+// with a reload from storage on a cache miss so a key created by another
+// instance is picked up.
+func (p *Plugin) publicKeyByKID(ctx context.Context, kid string) (ed25519.PublicKey, error) {
+	if kid == "" {
+		return nil, errors.New("jwt: token has no kid")
+	}
+	p.pubMu.RLock()
+	pub, ok := p.pubKeys[kid]
+	p.pubMu.RUnlock()
+	if ok {
+		return pub, nil
+	}
+	rec, err := p.auth.Storage().FindOne(ctx, ModelJWKS, []storage.Where{storage.W("id", kid)})
+	if err != nil {
+		return nil, fmt.Errorf("jwt: no signing key with id %q", kid)
+	}
+	key, err := p.decodePublicKey(rec)
+	if err != nil {
+		return nil, err
+	}
+	p.pubMu.Lock()
+	if p.pubKeys == nil {
+		p.pubKeys = map[string]ed25519.PublicKey{}
+	}
+	p.pubKeys[kid] = key.pub
+	p.pubMu.Unlock()
+	return key.pub, nil
+}
+
+// audienceContains reports whether aud (a string or an array of strings,
+// as JWT allows) includes want.
+func audienceContains(aud any, want string) bool {
+	switch v := aud.(type) {
+	case string:
+		return v == want
+	case []any:
+		for _, e := range v {
+			if s, ok := e.(string); ok && s == want {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (p *Plugin) handleToken(c *godevauth.Ctx) error {

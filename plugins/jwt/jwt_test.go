@@ -302,3 +302,57 @@ func publishedKey(t *testing.T, jwksBody map[string]any, n int) any {
 	}
 	return pub
 }
+
+// Regression test for M8: Verify used only the process's current signing
+// key, so a token signed before a rotation — or by another instance
+// whose key this process had not cached — failed even though its key is
+// still published. It must select the verifying key by the token's kid.
+func TestVerifySelectsKeyByKID(t *testing.T) {
+	env, plugin := newEnv(t)
+	res, body := env.GET("/token")
+	env.RequireStatus(res, body, http.StatusOK)
+	oldToken, _ := body["token"].(string)
+
+	if err := plugin.RotateKey(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// The plugin now signs with a new key. A token from the previous
+	// key must still verify through this same instance.
+	if _, err := plugin.Verify(context.Background(), oldToken); err != nil {
+		t.Fatalf("token from the pre-rotation key does not verify: %v", err)
+	}
+
+	// A second instance sharing the same storage (a fresh cache) must
+	// verify a token signed by the first, selecting the key by kid from
+	// storage rather than its own current key.
+	other := jwt.New()
+	if err := other.Init(env.Auth); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := other.Verify(context.Background(), oldToken); err != nil {
+		t.Fatalf("a second instance cannot verify a token by kid lookup: %v", err)
+	}
+}
+
+// Regression test for M8: Verify checks the issuer and audience, not
+// just the signature.
+func TestVerifyChecksIssuerAndAudience(t *testing.T) {
+	env, plugin := newEnv(t, jwt.Options{Issuer: "https://issuer.example", Audience: "https://app.example"})
+	res, body := env.GET("/token")
+	env.RequireStatus(res, body, http.StatusOK)
+	token, _ := body["token"].(string)
+
+	if _, err := plugin.Verify(context.Background(), token); err != nil {
+		t.Fatalf("a token from this plugin does not verify: %v", err)
+	}
+
+	// A plugin with a different audience over the same storage must
+	// reject it, even though the signature is valid.
+	wrongAud := jwt.New(jwt.Options{Issuer: "https://issuer.example", Audience: "https://other.example"})
+	if err := wrongAud.Init(env.Auth); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wrongAud.Verify(context.Background(), token); err == nil {
+		t.Fatal("a token for a different audience verified")
+	}
+}

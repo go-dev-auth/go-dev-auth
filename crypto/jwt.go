@@ -212,6 +212,24 @@ func numericClaimTime(v any) (time.Time, bool) {
 	return time.Time{}, false
 }
 
+// DecodeJWTHeader decodes the header of a JWT without verifying it, so a
+// caller can select the verifying key by its kid before verification.
+func DecodeJWTHeader(token string) (JWTHeader, error) {
+	parts := strings.Split(token, ".")
+	if len(parts) < 2 {
+		return JWTHeader{}, ErrInvalidToken
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return JWTHeader{}, ErrInvalidToken
+	}
+	var header JWTHeader
+	if err := json.Unmarshal(raw, &header); err != nil {
+		return JWTHeader{}, ErrInvalidToken
+	}
+	return header, nil
+}
+
 // DecodeJWTClaims decodes the payload of a JWT without verifying it.
 func DecodeJWTClaims(token string) (Claims, error) {
 	parts := strings.Split(token, ".")
