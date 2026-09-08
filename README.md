@@ -227,6 +227,8 @@ import (
 	"github.com/go-dev-auth/go-dev-auth/plugins/jwt"
 	"github.com/go-dev-auth/go-dev-auth/plugins/magiclink"
 	"github.com/go-dev-auth/go-dev-auth/plugins/organization"
+	"github.com/go-dev-auth/go-dev-auth/plugins/passkey"
+	"github.com/go-dev-auth/go-dev-auth/plugins/sso"
 	"github.com/go-dev-auth/go-dev-auth/plugins/twofactor"
 )
 
@@ -241,9 +243,20 @@ godevauth.Config{
 				return mailer.Send(email, "Sign in", url)
 			},
 		}),
+		passkey.New(),
+		sso.New(sso.Options{
+			// gate who may register identity providers
+			Authorize: func(c *godevauth.Ctx, sd *godevauth.SessionData) error {
+				return myApp.RequireAdmin(sd)
+			},
+		}),
 	},
 }
 ```
+
+**Passkeys** (`plugins/passkey`) add WebAuthn registration and sign-in with no external dependency: the CBOR/COSE parsing and ES256/RS256/Ed25519 signature verification live in the package. Registration needs a fresh session; sign-in uses discoverable credentials and runs through `SignInUser`, so bans and two-factor policy still apply. The signature counter is checked for the cloned-authenticator case.
+
+**SSO** (`plugins/sso`) lets each organization bring its own OpenID Connect identity provider (Okta, Microsoft Entra, Google Workspace, Keycloak). Providers are registered at runtime, matched to users by email domain, and the sign-in runs through the same OAuth flow as social login — browser-bound single-use state, PKCE, ID-token verification against the issuer's JWKS. Client secrets are encrypted at rest; management endpoints fail closed until `Options.Authorize` is set.
 
 Writing your own plugin means implementing three methods (`ID`, `Init`, `Routes`) and optionally `Schema`, `Middleware`, `BeforeRequest`/`AfterRequest`, `SignInGuard` (veto or challenge a sign-in on every path) or `SessionGuard` (re-check every request).
 
@@ -273,6 +286,8 @@ All endpoints live under `Config.BasePath` (default `/api/auth`) and match bette
 | User | `POST /update-user`, `POST /change-email`, `POST /delete-user`, `GET|POST /delete-user/callback` (GET confirms, POST deletes) |
 | Two-factor | `POST /two-factor/{enable,disable,get-totp-uri,verify-totp,send-otp,verify-otp,generate-backup-codes,verify-backup-code}` |
 | Magic link | `POST /sign-in/magic-link`, `GET /magic-link/verify` |
+| Passkey | `GET /passkey/generate-register-options`, `POST /passkey/verify-registration`, `POST /passkey/generate-authenticate-options`, `POST /passkey/verify-authentication`, `GET /passkey/list-user-passkeys`, `POST /passkey/{delete-passkey,update-passkey}` |
+| SSO | `POST /sign-in/sso`, `POST /sso/register`, `GET /sso/list`, `POST /sso/delete`, `GET|POST /callback/sso:<providerId>` |
 | Organization | `POST /organization/{create,update,delete,set-active,invite-member,accept-invitation,reject-invitation,cancel-invitation,remove-member,update-member-role,leave,check-slug,create-team,remove-team}`, `GET /organization/{list,get-full-organization,get-invitation,list-invitations,get-active-member,list-teams}` |
 | Admin | `POST /admin/{create-user,set-role,set-user-password,update-user,ban-user,unban-user,impersonate-user,stop-impersonating,list-user-sessions,revoke-user-session,revoke-user-sessions,remove-user}`, `GET /admin/list-users` |
 | API keys | `POST /api-key/{create,update,delete,verify}`, `GET /api-key/{get,list}` |

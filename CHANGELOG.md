@@ -20,6 +20,26 @@ changes will require a major version.
   lifetime. SQLite was never affected.
 
 ### Added
+- **Passkey plugin (`plugins/passkey`).** WebAuthn registration and
+  sign-in with no external dependency — an auditable minimal CBOR
+  decoder and ES256/RS256/Ed25519 signature verification live in the
+  package. Registration requires a fresh session; sign-in uses
+  discoverable credentials and runs through `SignInUser` so guards
+  (bans, two-factor policy) still apply. Challenges are single-use, the
+  signature counter is checked for the cloned-authenticator case, and
+  the verification endpoints carry the strict rate limit. Route names
+  mirror better-auth's passkey plugin.
+- **SSO plugin (`plugins/sso`).** OpenID Connect single sign-on with
+  identity providers registered at runtime and matched to users by
+  email domain, so each organization can bring its own IdP. Sign-in
+  runs through the same OAuth flow as social login (browser-bound
+  single-use state, PKCE, ID-token verification against the issuer's
+  JWKS) via a new `ProviderSourcePlugin` extension point and the
+  exported `Auth.StartOAuthFlow`. OIDC discovery validates the returned
+  issuer; client secrets are encrypted at rest (the plugin implements
+  `SecretRotator`); management endpoints fail closed until
+  `Options.Authorize` is configured. Providers surface as
+  `sso:<providerId>`.
 - **Real-server conformance in CI.** The `storagetest` contract,
   migration idempotence and the full HTTP auth flow now run against
   real PostgreSQL and MySQL servers on every push, alongside the
@@ -40,6 +60,64 @@ changes will require a major version.
   dependencies, and both are built in CI.
 
 ### Security
+- **Session sliding-refresh no longer extends short-lived sessions.**
+  The refresh window was computed as if every session had the
+  configured `Session.ExpiresIn` lifetime, so a session minted with a
+  shorter custom duration was "overdue" on its first lookup and got
+  extended to the full default (7 days). Admin impersonation — 1 hour by
+  design, and bypassing the target's two-factor — was the victim.
+  Refresh now applies only to sessions whose own lifetime is at least
+  `ExpiresIn`; impersonation cookies are also no longer remember-me.
+- **Organization invitations require a verified email to accept.** Only
+  an address match was checked, so with the defaults (verification not
+  required, auto sign-in) anyone who learned a pending invitation's id
+  could sign up an unverified account under the invitee's address and
+  claim the role. Accepting, rejecting or reading an invitation now
+  requires `EmailVerified`, and enumerating pending invitations
+  (`list-invitations`, the invitation section of
+  `get-full-organization`) is restricted to owners and admins.
+- **Trusted-provider account linking requires a verified local
+  account.** A trusted IdP asserting a verified email would auto-link
+  into a pre-existing local account that had never verified the address,
+  so an attacker who pre-registered the victim's email with a password
+  inherited the victim on their first social sign-in. The local account
+  must now be verified too.
+- **Bearer plugin requires signed tokens by default.** Raw session
+  tokens are stored in clear, so accepting them made database read
+  access equivalent to account takeover. Raw tokens now require the
+  explicit `Options.AllowUnsignedTokens` migration switch.
+
+### Fixed
+- **Sign in with Apple completes.** Apple's `response_mode=form_post`
+  callback is a cross-site POST that the origin check answered with
+  `403`, and the `SameSite=Lax` state cookie was withheld on it. The
+  callback route is now exempt from the origin check (single-use
+  browser-bound state plus PKCE authenticate it), the state cookie is
+  minted `SameSite=None; Secure` for form_post providers, and
+  `Advanced.DisableOriginCheckForPaths` now matches route patterns as
+  well as resolved paths.
+- **Rate-limit GC evicts each key by its own window.** A hit on a
+  short-window rule swept every key older than ten of *its* windows,
+  including live counters for long-window custom rules, silently capping
+  them. Each key is now collected relative to the window it was created
+  under.
+- **Provider calls have a default timeout.** `Exchange`, `UserInfo` and
+  `RefreshToken` used a client with no timeout on an undeadlined
+  request context, so a hung identity provider pinned goroutines
+  indefinitely. The default client now has a 15-second timeout.
+- **MySQL foreign keys are enforced.** MySQL silently discards
+  column-inline `REFERENCES` clauses, so cascading deletes never fired
+  there and rows owned by a deleted user (2FA secrets, API keys, org
+  memberships) were orphaned. The MySQL dialect now emits table-level
+  `FOREIGN KEY` constraints. The SQLite `_fk=1` pragma requirement is
+  documented.
+- **Strict rate limits on mail-sending and code-guessing plugin
+  routes.** `/sign-in/magic-link`, `/two-factor/send-otp`,
+  `/two-factor/verify-*` and `/organization/invite-member` ran at the
+  100-req global default; they now carry the same strict per-IP limit as
+  the core sign-in endpoints.
+
+### Security (existing)
 - `admin`: **free-form update maps are no longer a side door around
   validation.** `update-user` wrote its `data` map onto the user record
   with only `id` stripped, so it accepted what its siblings refused —
