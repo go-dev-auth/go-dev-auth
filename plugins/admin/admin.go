@@ -39,6 +39,13 @@ type Options struct {
 	DefaultBanExpiresIn time.Duration
 	// BannedUserMessage is returned when a banned user signs in.
 	BannedUserMessage string
+	// AllowImpersonatingAdmins lets an admin impersonate another admin.
+	// It is off by default: impersonating a peer admin is how one admin
+	// launders privileged actions under another's identity, and an
+	// impersonated session cannot use admin powers anyway (see
+	// requireAdmin), so the usual reason to impersonate an admin is the
+	// abusive one.
+	AllowImpersonatingAdmins bool
 }
 
 // Plugin implements the admin plugin.
@@ -197,6 +204,22 @@ func (p *Plugin) requireAdmin(c *godevauth.Ctx) (*godevauth.SessionData, error) 
 		})
 		return nil, godevauth.NewAPIError(http.StatusForbidden,
 			"NOT_ALLOWED", "You are not allowed to perform this action")
+	}
+	// An impersonated session must not wield admin powers, even when the
+	// impersonated user is themselves an admin. Otherwise every admin
+	// action taken while impersonating is attributed to the target, and
+	// the administrator behind it disappears from the audit trail — the
+	// laundering M14 describes. Impersonation is for seeing what the
+	// user sees, not for acting as an admin as them.
+	if imp, _ := sd.Session.Extra["impersonatedBy"].(string); imp != "" {
+		p.audit(c, sd, godevauth.Event{
+			Type: godevauth.EventAdminAction, Outcome: godevauth.OutcomeFailure,
+			Reason: godevauth.ReasonNotAuthorized, Action: c.RoutePattern(),
+			TargetID: sd.User.ID,
+		})
+		return nil, godevauth.NewAPIError(http.StatusForbidden,
+			"NOT_ALLOWED_WHILE_IMPERSONATING",
+			"Admin actions are not permitted from an impersonated session")
 	}
 	return sd, nil
 }
@@ -651,6 +674,16 @@ func (p *Plugin) handleImpersonate(c *godevauth.Ctx) error {
 			Reason: godevauth.ReasonUnknownUser, TargetID: body.UserID,
 		})
 		return godevauth.ErrUserNotFound
+	}
+	// Impersonating a peer admin is refused by default: it is the move
+	// that lets one admin act under another's identity.
+	if p.IsAdmin(target) && !p.opts.AllowImpersonatingAdmins {
+		p.audit(c, sd, godevauth.Event{
+			Type: godevauth.EventImpersonationStarted, Outcome: godevauth.OutcomeFailure,
+			Reason: godevauth.ReasonNotAuthorized, TargetID: target.ID,
+		})
+		return godevauth.NewAPIError(http.StatusForbidden,
+			"CANNOT_IMPERSONATE_ADMIN", "Impersonating another administrator is not permitted")
 	}
 	c.SetAuthMethod(methodImpersonation)
 	// rememberMe=false: an impersonation session is short-lived by
