@@ -301,7 +301,7 @@ func (a *Auth) handleOAuthCallback(c *Ctx) error {
 		if err != nil || sd == nil || sd.User.ID != st.LinkUserID {
 			return errorRedirect(st, "session_mismatch")
 		}
-		if err := a.linkOAuthAccount(c.Context(), sd.User, providerID, profile, tokens); err != nil {
+		if err := a.linkOAuthAccount(c.Context(), a.store, sd.User, providerID, profile, tokens); err != nil {
 			var apiErr *APIError
 			if errors.As(err, &apiErr) {
 				a.EmitEvent(c, Event{
@@ -407,7 +407,7 @@ func (a *Auth) resolveOAuthUser(ctx context.Context, providerID string, profile 
 				return nil, false, NewAPIError(http.StatusUnauthorized, "ACCOUNT_NOT_LINKED",
 					"Account not linked. Sign in with your original method, verify your email, then link this provider from your account settings.")
 			}
-			if err := a.linkOAuthAccount(ctx, existing, providerID, profile, tokens); err != nil {
+			if err := a.linkOAuthAccount(ctx, a.store, existing, providerID, profile, tokens); err != nil {
 				return nil, false, err
 			}
 			return existing, false, nil
@@ -431,22 +431,31 @@ func (a *Auth) resolveOAuthUser(ctx context.Context, providerID string, profile 
 			"The provider did not return an email address for this account")
 	}
 
-	// new user
-	user, err := a.store.CreateUser(ctx, &storage.User{
-		Name:          profile.Name,
-		Email:         profile.Email,
-		EmailVerified: profile.EmailVerified,
-		Image:         profile.Image,
-	})
-	if err != nil {
+	// New user: the user row and its provider account must land
+	// together, or a failure after the first leaves an address taken by
+	// a user with no way in.
+	var user *storage.User
+	if err := a.store.transaction(ctx, func(tx *store) error {
+		u, err := tx.CreateUser(ctx, &storage.User{
+			Name:          profile.Name,
+			Email:         profile.Email,
+			EmailVerified: profile.EmailVerified,
+			Image:         profile.Image,
+		})
+		if err != nil {
+			return err
+		}
+		if err := a.linkOAuthAccount(ctx, tx, u, providerID, profile, tokens); err != nil {
+			return err
+		}
+		user = u
+		return nil
+	}); err != nil {
 		if isUniqueViolation(err) {
 			// lost a race with a concurrent sign-up for this address
 			return nil, false, NewAPIError(http.StatusUnauthorized, "ACCOUNT_NOT_LINKED",
 				"Account not linked. Sign in with your original method.")
 		}
-		return nil, false, err
-	}
-	if err := a.linkOAuthAccount(ctx, user, providerID, profile, tokens); err != nil {
 		return nil, false, err
 	}
 	return user, true, nil
@@ -504,13 +513,13 @@ func (a *Auth) tokenUpdate(accountID string, tokens *oauth2.Tokens) (map[string]
 // each pass a "does it exist yet?" check and then both insert — the
 // database, which now carries the composite unique constraint, is the
 // arbiter, so exactly one row can ever exist for an external identity.
-func (a *Auth) linkOAuthAccount(ctx context.Context, user *storage.User, providerID string, profile *oauth2.UserProfile, tokens *oauth2.Tokens) error {
+func (a *Auth) linkOAuthAccount(ctx context.Context, st *store, user *storage.User, providerID string, profile *oauth2.UserProfile, tokens *oauth2.Tokens) error {
 	linking := a.config.Account.AccountLinking
 
 	if linking.Disabled {
 		// Linking is off, so a provider identity may only be attached
 		// to the user it just created.
-		if accounts, err := a.store.ListUserAccounts(ctx, user.ID); err == nil && len(accounts) > 0 {
+		if accounts, err := st.ListUserAccounts(ctx, user.ID); err == nil && len(accounts) > 0 {
 			return NewAPIError(http.StatusForbidden, "ACCOUNT_LINKING_DISABLED",
 				"Account linking is disabled")
 		}
@@ -524,7 +533,7 @@ func (a *Auth) linkOAuthAccount(ctx context.Context, user *storage.User, provide
 	// exist before the tokens are sealed. Generate it here rather than
 	// letting CreateAccount do it, and hand the same value to both.
 	acc := &storage.Account{
-		ID:         a.store.generateID(storage.ModelAccount),
+		ID:         st.generateID(storage.ModelAccount),
 		UserID:     user.ID,
 		AccountID:  profile.ID,
 		ProviderID: providerID,
@@ -545,14 +554,14 @@ func (a *Auth) linkOAuthAccount(ctx context.Context, user *storage.User, provide
 		acc.RefreshTokenExpiresAt = tokens.RefreshTokenExpiresAt
 		acc.Scope = tokens.Scope
 	}
-	if _, err := a.store.CreateAccount(ctx, acc); err != nil {
+	if _, err := st.CreateAccount(ctx, acc); err != nil {
 		if !isUniqueViolation(err) {
 			return err
 		}
 		// The database refused a second row for this external identity.
 		// Load the row that won and reconcile: linking to the same user is
 		// idempotent, linking to a different one is a conflict.
-		existing, ferr := a.store.FindAccount(ctx, providerID, profile.ID)
+		existing, ferr := st.FindAccount(ctx, providerID, profile.ID)
 		if ferr != nil {
 			// The conflict was not on (providerId, accountId) after all
 			// (e.g. a generated-id collision); report the original error.

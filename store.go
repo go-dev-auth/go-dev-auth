@@ -17,6 +17,21 @@ type store struct {
 	base storage.Adapter
 }
 
+// transaction runs fn inside a database transaction when the adapter
+// supports one, so a multi-statement write either lands whole or not at
+// all. When the adapter has no transaction support fn runs directly, and
+// the caller is responsible for compensation. The store passed to fn is
+// bound to the transaction, so its writes participate in it.
+func (st *store) transaction(ctx context.Context, fn func(tx *store) error) error {
+	tr, ok := st.base.(storage.Transactor)
+	if !ok {
+		return fn(st)
+	}
+	return tr.Transaction(ctx, func(txBase storage.Adapter) error {
+		return fn(&store{auth: st.auth, base: txBase})
+	})
+}
+
 func (st *store) generateID(model string) string {
 	if gen := st.auth.config.Advanced.GenerateID; gen != nil {
 		return gen(model)
@@ -93,13 +108,23 @@ func (st *store) UpdateUser(ctx context.Context, id string, update map[string]an
 }
 
 func (st *store) DeleteUser(ctx context.Context, id string) error {
-	if _, err := st.base.DeleteMany(ctx, storage.ModelSession, []storage.Where{storage.W("userId", id)}); err != nil {
-		return err
-	}
-	if _, err := st.base.DeleteMany(ctx, storage.ModelAccount, []storage.Where{storage.W("userId", id)}); err != nil {
-		return err
-	}
-	return st.base.Delete(ctx, storage.ModelUser, []storage.Where{storage.W("id", id)})
+	// One transaction: a partial delete would leave a user without a
+	// credential, or sessions and accounts orphaned from a deleted
+	// user. Plugin-owned rows are removed by the database foreign-key
+	// cascade (or the plugin-cascade fallback for adapters without one,
+	// see deleteUserPluginData).
+	return st.transaction(ctx, func(tx *store) error {
+		if _, err := tx.base.DeleteMany(ctx, storage.ModelSession, []storage.Where{storage.W("userId", id)}); err != nil {
+			return err
+		}
+		if _, err := tx.base.DeleteMany(ctx, storage.ModelAccount, []storage.Where{storage.W("userId", id)}); err != nil {
+			return err
+		}
+		if err := tx.auth.deleteUserPluginData(ctx, tx.base, id); err != nil {
+			return err
+		}
+		return tx.base.Delete(ctx, storage.ModelUser, []storage.Where{storage.W("id", id)})
+	})
 }
 
 // ---- sessions ----
