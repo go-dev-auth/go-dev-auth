@@ -2,6 +2,8 @@ package godevauth
 
 import (
 	"net/http"
+
+	"github.com/go-dev-auth/go-dev-auth/storage"
 )
 
 func (a *Auth) handleGetSession(c *Ctx) error {
@@ -51,7 +53,11 @@ func (a *Auth) handleListSessions(c *Ctx) error {
 }
 
 type revokeSessionBody struct {
-	Token string `json:"token"`
+	// Token identifies the session by its raw token. Session listings
+	// deliberately omit the token, so revoking another device from a
+	// listing uses SessionID instead.
+	Token     string `json:"token"`
+	SessionID string `json:"sessionId"`
 }
 
 func (a *Auth) handleRevokeSession(c *Ctx) error {
@@ -63,14 +69,22 @@ func (a *Auth) handleRevokeSession(c *Ctx) error {
 	if err := c.BindJSON(&body); err != nil {
 		return err
 	}
-	if body.Token == "" {
+
+	var target *storage.Session
+	switch {
+	case body.SessionID != "":
+		target, err = a.store.FindSessionByID(c.Context(), body.SessionID)
+	case body.Token != "":
+		target, err = a.store.FindSessionByToken(c.Context(), body.Token)
+	default:
 		return ErrInvalidToken
 	}
-	target, err := a.store.FindSessionByToken(c.Context(), body.Token)
-	if err != nil || target.UserID != sd.User.ID {
+	// Ownership is enforced either way, so one user cannot revoke
+	// another's session by guessing an id.
+	if err != nil || target == nil || target.UserID != sd.User.ID {
 		return ErrInvalidToken
 	}
-	if err := a.store.DeleteSessionByToken(c.Context(), body.Token); err != nil {
+	if err := a.store.DeleteSessionByID(c.Context(), target.ID); err != nil {
 		return err
 	}
 	a.EmitEvent(c, Event{

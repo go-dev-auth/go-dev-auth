@@ -178,6 +178,18 @@ func (st *store) DeleteSessionByToken(ctx context.Context, token string) error {
 	return st.base.Delete(ctx, storage.ModelSession, []storage.Where{storage.W("token", token)})
 }
 
+func (st *store) FindSessionByID(ctx context.Context, id string) (*storage.Session, error) {
+	rec, err := st.base.FindOne(ctx, storage.ModelSession, []storage.Where{storage.W("id", id)})
+	if err != nil {
+		return nil, err
+	}
+	return storage.SessionFromMap(rec), nil
+}
+
+func (st *store) DeleteSessionByID(ctx context.Context, id string) error {
+	return st.base.Delete(ctx, storage.ModelSession, []storage.Where{storage.W("id", id)})
+}
+
 func (st *store) DeleteUserSessions(ctx context.Context, userID string) error {
 	_, err := st.base.DeleteMany(ctx, storage.ModelSession, []storage.Where{storage.W("userId", userID)})
 	return err

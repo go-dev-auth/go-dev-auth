@@ -322,6 +322,13 @@ func (a *Auth) RevokeSession(ctx context.Context, token string) error {
 	return a.store.DeleteSessionByToken(ctx, token)
 }
 
+// RevokeSessionByID revokes a session by its id. Session listings omit
+// the raw token, so this is how a listed session (another device) is
+// revoked.
+func (a *Auth) RevokeSessionByID(ctx context.Context, id string) error {
+	return a.store.DeleteSessionByID(ctx, id)
+}
+
 // RevokeUserSessions revokes all sessions of a user.
 func (a *Auth) RevokeUserSessions(ctx context.Context, userID string) error {
 	return a.store.DeleteUserSessions(ctx, userID)

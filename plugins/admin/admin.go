@@ -730,6 +730,10 @@ func (p *Plugin) handleListUserSessions(c *godevauth.Ctx) error {
 
 type sessionTokenBody struct {
 	SessionToken string `json:"sessionToken"`
+	// SessionID revokes by id, which is what admin session listings
+	// expose (they omit the raw token, so revoke-by-token could not act
+	// on a listed session).
+	SessionID string `json:"sessionId"`
 }
 
 func (p *Plugin) handleRevokeUserSession(c *godevauth.Ctx) error {
@@ -741,8 +745,17 @@ func (p *Plugin) handleRevokeUserSession(c *godevauth.Ctx) error {
 	if err := c.BindJSON(&body); err != nil {
 		return err
 	}
-	if err := p.auth.RevokeSession(c.Context(), body.SessionToken); err != nil {
-		return err
+	switch {
+	case body.SessionID != "":
+		if err := p.auth.RevokeSessionByID(c.Context(), body.SessionID); err != nil {
+			return err
+		}
+	case body.SessionToken != "":
+		if err := p.auth.RevokeSession(c.Context(), body.SessionToken); err != nil {
+			return err
+		}
+	default:
+		return godevauth.ErrInvalidBody
 	}
 	// body.SessionToken is a live bearer credential and is deliberately
 	// not part of the event.
