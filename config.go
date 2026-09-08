@@ -190,6 +190,14 @@ type EmailVerificationConfig struct {
 	ExpiresIn time.Duration
 	// OnEmailVerification runs after an email is verified.
 	OnEmailVerification func(ctx context.Context, user *storage.User) error
+	// ConfirmationPage makes GET /verify-email render an interstitial
+	// confirmation page instead of verifying immediately; the token is
+	// consumed only when the user submits the form (a POST). Turn it on
+	// to stop mail-security scanners and link prefetchers — which fire
+	// GETs — from consuming the one-time token before the user clicks.
+	// It is off by default because it adds a click and existing
+	// integrations link straight to the GET endpoint.
+	ConfirmationPage bool
 }
 
 // SessionConfig mirrors better-auth's session options.
@@ -576,6 +584,10 @@ func (c *Config) validate() error {
 	if c.BaseURL == "" {
 		return errors.New("go-dev-auth: Config.BaseURL is required (it determines cookie security, trusted origins and redirect targets)")
 	}
+	// A trailing slash would produce "//api/auth/..." in every OAuth
+	// redirect_uri and verification link, which providers reject and
+	// which breaks link matching.
+	c.BaseURL = strings.TrimRight(c.BaseURL, "/")
 	u, err := url.Parse(c.BaseURL)
 	if err != nil || u.Scheme == "" || u.Host == "" {
 		return fmt.Errorf("go-dev-auth: Config.BaseURL %q is not an absolute URL", c.BaseURL)

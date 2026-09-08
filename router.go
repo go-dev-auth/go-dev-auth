@@ -115,6 +115,10 @@ func (a *Auth) coreRoutes() []Route {
 	}
 	routes = append(routes,
 		Route{Method: http.MethodGet, Path: "/verify-email", Handler: a.handleVerifyEmail},
+		// POST performs the verification when ConfirmationPage is on, so
+		// the token is consumed by a human submitting a form, not by a
+		// scanner firing the GET link.
+		Route{Method: http.MethodPost, Path: "/verify-email", Handler: a.handleVerifyEmailPost},
 	)
 
 	if a.config.User.ChangeEmail.Enabled {

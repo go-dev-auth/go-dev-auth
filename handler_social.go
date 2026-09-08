@@ -495,7 +495,11 @@ func (a *Auth) tokenUpdate(accountID string, tokens *oauth2.Tokens) (map[string]
 		update["refreshTokenExpiresAt"] = tokens.RefreshTokenExpiresAt
 	}
 	if tokens.IDToken != "" {
-		update["idToken"] = tokens.IDToken
+		enc, err := a.maybeEncrypt(accountBinding(accountID, "idToken"), tokens.IDToken)
+		if err != nil {
+			return nil, err
+		}
+		update["idToken"] = enc
 	}
 	if tokens.Scope != "" {
 		update["scope"] = tokens.Scope
@@ -547,9 +551,13 @@ func (a *Auth) linkOAuthAccount(ctx context.Context, st *store, user *storage.Us
 		if err != nil {
 			return err
 		}
+		idTok, err := a.maybeEncrypt(accountBinding(acc.ID, "idToken"), tokens.IDToken)
+		if err != nil {
+			return err
+		}
 		acc.AccessToken = access
 		acc.RefreshToken = refresh
-		acc.IDToken = tokens.IDToken
+		acc.IDToken = idTok
 		acc.AccessTokenExpiresAt = tokens.AccessTokenExpiresAt
 		acc.RefreshTokenExpiresAt = tokens.RefreshTokenExpiresAt
 		acc.Scope = tokens.Scope

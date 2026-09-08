@@ -164,7 +164,12 @@ func (a *Auth) handleDeleteUser(c *Ctx) error {
 			return ErrCredentialAccountNotFound
 		}
 		ok, err := a.config.EmailAndPassword.PasswordHasher.Verify(account.Password, body.Password)
-		if err != nil || !ok {
+		if err != nil {
+			// Hasher error (e.g. ErrHasherBusy) is capacity, not a wrong
+			// password; surface it as-is rather than as bad credentials.
+			return err
+		}
+		if !ok {
 			return ErrInvalidPassword
 		}
 	} else if cfg.SendDeleteAccountVerification != nil {

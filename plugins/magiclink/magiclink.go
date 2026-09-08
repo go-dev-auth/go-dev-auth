@@ -106,13 +106,17 @@ func (p *Plugin) handleSignIn(c *godevauth.Ctx) error {
 	ctx := c.Context()
 	if p.opts.DisableSignUp {
 		if _, err := p.auth.FindUserByEmail(ctx, body.Email); err != nil {
-			return godevauth.ErrUserNotFound
+			// Returning USER_NOT_FOUND here told an attacker which
+			// addresses are registered. Answer exactly as the success
+			// path does, and do comparable work, so the response neither
+			// says nor times the difference. No link is sent.
+			p.auth.DummyTokenWrite(ctx)
+			return c.JSON(http.StatusOK, map[string]any{"status": true})
 		}
 	}
 	token := crypto.GenerateToken(24)
 	payload, err := json.Marshal(linkPayload{
 		Email:              body.Email,
-		Name:               body.Name,
 		CallbackURL:        body.CallbackURL,
 		NewUserCallbackURL: body.NewUserCallbackURL,
 		ErrorCallbackURL:   body.ErrorCallbackURL,
@@ -176,7 +180,10 @@ func (p *Plugin) handleVerify(c *godevauth.Ctx) error {
 			return fail(&payload)
 		}
 		user, err = p.auth.CreateUser(ctx, &storage.User{
-			Name:          payload.Name,
+			// The link is proof of address control, not of the name the
+			// requester typed — an attacker could have requested the link
+			// for this address. The user sets their name after signing in.
+			Name:          "",
 			Email:         payload.Email,
 			EmailVerified: true,
 		})

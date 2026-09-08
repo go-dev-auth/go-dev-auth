@@ -55,6 +55,29 @@ func (a *Auth) StoreTokenValue(ctx context.Context, kind, token, value string, t
 	return err
 }
 
+// dummyTokenWrite performs a throwaway token store-and-delete so that
+// endpoints which only write a token for a known account (password
+// reset, verification resend) take a comparable amount of database work
+// when the account does not exist. Without it, "instant 200 for unknown,
+// slower 200 after a write for known" is a timing oracle for which
+// addresses are registered. The SMTP send itself is the app's callback;
+// send it asynchronously to keep that half off the timing channel too.
+func (a *Auth) dummyTokenWrite(ctx context.Context) {
+	token := crypto.GenerateToken(24)
+	id := tokenIdentifier("dummy", token)
+	if _, err := a.store.CreateVerification(ctx, id, "", time.Minute); err == nil {
+		_ = a.store.DeleteVerificationsByIdentifier(ctx, id)
+	}
+}
+
+// DummyTokenWrite is the exported form of dummyTokenWrite for plugins
+// (magic link, custom flows) that need to match the timing of a token
+// write on a branch that does not actually write one, so it is not an
+// account-enumeration oracle.
+func (a *Auth) DummyTokenWrite(ctx context.Context) {
+	a.dummyTokenWrite(ctx)
+}
+
 // LookupToken returns the stored verification for a token without
 // consuming it.
 func (a *Auth) LookupToken(ctx context.Context, kind, token string) (*storage.Verification, error) {
