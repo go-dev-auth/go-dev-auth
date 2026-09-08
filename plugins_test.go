@@ -400,7 +400,7 @@ func TestOrganizationPlugin(t *testing.T) {
 			return nil
 		},
 	})
-	_, tc := newTestAuth(t, func(cfg *godevauth.Config) {
+	auth, tc := newTestAuth(t, func(cfg *godevauth.Config) {
 		cfg.Plugins = []godevauth.Plugin{orgPlugin}
 	})
 	tc.signUp("owner@example.com", "password123", "Owner")
@@ -439,6 +439,7 @@ func TestOrganizationPlugin(t *testing.T) {
 	// the invitee signs up and accepts
 	tc2 := secondClient(t, tc)
 	tc2.signUp("member@example.com", "password123", "Member")
+	markEmailVerified(t, auth, "member@example.com")
 	res, body = tc2.post("/organization/accept-invitation", map[string]any{
 		"invitationId": invitationID,
 	})

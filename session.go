@@ -215,7 +215,15 @@ func (a *Auth) GetSessionFromToken(ctx context.Context, token string) (*SessionD
 		return nil, err
 	}
 	// sliding expiration
-	if !a.config.Session.DisableSessionRefresh {
+	//
+	// Refresh is gated on the session's own lifetime, not just the
+	// configured default. A session minted with a custom, shorter
+	// duration (admin impersonation, a plugin's short-lived session) is
+	// a deliberate security boundary: computing "overdue" as if it had
+	// the default lifetime would extend a 1-hour session to the full
+	// Session.ExpiresIn on its first lookup. Short-lived sessions are
+	// therefore fixed-expiry and never refreshed.
+	if !a.config.Session.DisableSessionRefresh && a.sessionRefreshable(sess) {
 		updateAt := sess.ExpiresAt.Add(-a.config.Session.ExpiresIn).Add(a.config.Session.UpdateAge)
 		if now.After(updateAt) {
 			updated, err := a.store.UpdateSession(ctx, token, map[string]any{
@@ -234,6 +242,24 @@ func (a *Auth) GetSessionFromToken(ctx context.Context, token string) (*SessionD
 		return nil, err
 	}
 	return sd, nil
+}
+
+// sessionRefreshable reports whether sliding expiration applies to
+// sess. Sessions created with a lifetime shorter than the configured
+// Session.ExpiresIn keep their original expiry.
+//
+// After a refresh ExpiresAt is now+ExpiresIn, so a default-lifetime
+// session keeps qualifying; a shorter one can never start.
+func (a *Auth) sessionRefreshable(sess *storage.Session) bool {
+	if sess.CreatedAt.IsZero() {
+		return false
+	}
+	lifetime := sess.ExpiresAt.Sub(sess.CreatedAt)
+	// CreatedAt is stamped by the storage adapter a moment after the
+	// handler computed ExpiresAt, so an exactly-default session can come
+	// out a few milliseconds short of ExpiresIn. One second of tolerance
+	// absorbs that without letting a deliberately shorter session slide.
+	return lifetime >= a.config.Session.ExpiresIn-time.Second
 }
 
 // CheckSessionGuards applies the registered session guards to a

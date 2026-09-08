@@ -630,7 +630,8 @@ func (p *Plugin) handleGetFull(c *godevauth.Ctx) error {
 	if orgID == "" {
 		return c.JSON(http.StatusOK, nil)
 	}
-	if _, err := p.Membership(ctx, orgID, sd.User.ID); err != nil {
+	viewer, err := p.Membership(ctx, orgID, sd.User.ID)
+	if err != nil {
 		return godevauth.NewAPIError(http.StatusForbidden, "NOT_A_MEMBER",
 			"You are not a member of this organization")
 	}
@@ -685,12 +686,16 @@ func (p *Plugin) handleGetFull(c *godevauth.Ctx) error {
 		}
 		members = append(members, entry)
 	}
-	invRecs, _ := p.auth.Storage().FindMany(ctx, ModelInvitation, []storage.Where{
-		storage.W("organizationId", orgID), storage.W("status", "pending"),
-	}, nil)
-	invitations := make([]*Invitation, 0, len(invRecs))
-	for _, r := range invRecs {
-		invitations = append(invitations, invitationFromMap(r))
+	// Pending invitations are capabilities (see handleListInvitations),
+	// so only owners and admins see them here.
+	invitations := make([]*Invitation, 0)
+	if viewer.Role == RoleOwner || viewer.Role == RoleAdmin {
+		invRecs, _ := p.auth.Storage().FindMany(ctx, ModelInvitation, []storage.Where{
+			storage.W("organizationId", orgID), storage.W("status", "pending"),
+		}, nil)
+		for _, r := range invRecs {
+			invitations = append(invitations, invitationFromMap(r))
+		}
 	}
 	out := map[string]any{
 		"id":          rec["id"],

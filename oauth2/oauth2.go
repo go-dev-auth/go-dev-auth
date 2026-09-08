@@ -61,6 +61,15 @@ type Provider interface {
 	UserInfo(ctx context.Context, tokens *Tokens) (*UserProfile, error)
 }
 
+// CrossSiteCallbackProvider is implemented by providers whose callback
+// arrives as a cross-site POST (response_mode=form_post; Sign in with
+// Apple is the canonical case) rather than a top-level GET redirect.
+// The host uses it to relax the state cookie's SameSite policy, which
+// would otherwise keep the cookie off the cross-site POST.
+type CrossSiteCallbackProvider interface {
+	CallbackIsCrossSite() bool
+}
+
 // RefreshableProvider is implemented by providers supporting refresh
 // tokens.
 type RefreshableProvider interface {
@@ -139,6 +148,13 @@ func New(spec Spec) *StdProvider {
 
 // ID implements Provider.
 func (p *StdProvider) ID() string { return p.Spec.ProviderID }
+
+// CallbackIsCrossSite implements CrossSiteCallbackProvider: a provider
+// that asks for response_mode=form_post delivers its callback as a
+// cross-site POST.
+func (p *StdProvider) CallbackIsCrossSite() bool {
+	return p.Spec.ExtraAuthParams["response_mode"] == "form_post"
+}
 
 func (p *StdProvider) client() *http.Client {
 	if p.Spec.HTTPClient != nil {

@@ -116,7 +116,11 @@ func (a *Auth) startOAuthFlow(c *Ctx, provider oauth2.Provider, st oauthState, l
 	// unforgeable: without it an attacker can complete their own
 	// authorization and hand the resulting callback URL to a victim,
 	// silently signing the victim into the attacker's account.
-	a.setOAuthStateCookie(c.W, state)
+	crossSitePost := false
+	if cs, ok := provider.(oauth2.CrossSiteCallbackProvider); ok {
+		crossSitePost = cs.CallbackIsCrossSite()
+	}
+	a.setOAuthStateCookie(c.W, state, crossSitePost)
 
 	authURL, err := provider.AuthorizationURL(oauth2.AuthorizeRequest{
 		State:        state,

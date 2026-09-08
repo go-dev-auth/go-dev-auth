@@ -158,6 +158,18 @@ func (e *Env) SignUp(email, password string) *storage.User {
 	return user
 }
 
+// MarkEmailVerified flips the stored emailVerified flag for a user, as
+// if they had completed email verification. Flows that require a
+// verified address (accepting an organization invitation, for one) can
+// arrange that precondition without wiring up email delivery.
+func (e *Env) MarkEmailVerified(userID string) {
+	e.T.Helper()
+	if _, err := e.Auth.Storage().Update(context.Background(), storage.ModelUser,
+		[]storage.Where{storage.W("id", userID)}, map[string]any{"emailVerified": true}); err != nil {
+		e.T.Fatalf("plugintest: marking user %s verified: %v", userID, err)
+	}
+}
+
 // SignIn authenticates an existing user on this client.
 func (e *Env) SignIn(email, password string) (*http.Response, map[string]any) {
 	e.T.Helper()

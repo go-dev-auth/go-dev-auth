@@ -653,7 +653,10 @@ func (p *Plugin) handleImpersonate(c *godevauth.Ctx) error {
 		return godevauth.ErrUserNotFound
 	}
 	c.SetAuthMethod(methodImpersonation)
-	sess, err := p.auth.CreateSessionWith(c, target, true, map[string]any{
+	// rememberMe=false: an impersonation session is short-lived by
+	// design, so its cookie must not be persisted for the full
+	// remember-me window.
+	sess, err := p.auth.CreateSessionWith(c, target, false, map[string]any{
 		"impersonatedBy": sd.User.ID,
 	}, p.opts.ImpersonationSessionDuration)
 	if err != nil {

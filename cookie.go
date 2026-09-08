@@ -144,11 +144,20 @@ func (a *Auth) readSessionToken(r *http.Request) (string, bool) {
 // this browser. Without it, an attacker who completes their own
 // authorization at the provider can feed the resulting callback URL to
 // a victim and silently sign them into the attacker's account.
-func (a *Auth) setOAuthStateCookie(w http.ResponseWriter, state string) {
+// crossSitePost is true for providers that deliver the callback as a
+// cross-site POST (response_mode=form_post; Sign in with Apple). A Lax
+// cookie is not sent on a cross-site POST, so the state check would
+// always fail; those flows need SameSite=None, which browsers only
+// accept together with Secure — form_post providers require an https
+// redirect URI anyway.
+func (a *Auth) setOAuthStateCookie(w http.ResponseWriter, state string, crossSitePost bool) {
 	c := a.newCookie(a.cookieName(cookieOAuthState), state, int(10*time.Minute/time.Second))
-	// The callback is a top-level cross-site redirect from the
-	// provider, so the cookie must survive it.
-	if c.SameSite == http.SameSiteStrictMode {
+	switch {
+	case crossSitePost && c.Secure:
+		c.SameSite = http.SameSiteNoneMode
+	case c.SameSite == http.SameSiteStrictMode:
+		// The callback is a top-level cross-site redirect from the
+		// provider, so the cookie must survive it.
 		c.SameSite = http.SameSiteLaxMode
 	}
 	http.SetCookie(w, c)

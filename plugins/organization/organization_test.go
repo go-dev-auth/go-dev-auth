@@ -86,6 +86,7 @@ func addMember(t *testing.T, env *plugintest.Env, box *inviteBox,
 
 	client := env.Client()
 	user := client.SignUp(email, password)
+	env.MarkEmailVerified(user.ID)
 	res, body = client.POST("/organization/accept-invitation", map[string]any{
 		"invitationId": invitationID,
 	})
@@ -290,11 +291,17 @@ func TestMemberCannotPerformOwnerOrAdminActions(t *testing.T) {
 		})
 	}
 
+	// Pending invitation ids are capabilities, so enumerating them is an
+	// owner/admin privilege, not a member one.
+	t.Run("member may not GET /organization/list-invitations", func(t *testing.T) {
+		res, body := member.GET("/organization/list-invitations")
+		env.RequireErrorCode(res, body, http.StatusForbidden, "INSUFFICIENT_PERMISSION")
+	})
+
 	// Membership does grant read access; refusing these would make the
 	// role useless rather than safe.
 	allowed := []string{
 		"/organization/get-full-organization",
-		"/organization/list-invitations",
 		"/organization/list-teams",
 		"/organization/get-active-member",
 	}
@@ -445,7 +452,7 @@ func TestInvitationLifecycle(t *testing.T) {
 	})
 
 	invitee := env.Client()
-	invitee.SignUp("member@example.com", password)
+	env.MarkEmailVerified(invitee.SignUp("member@example.com", password).ID)
 
 	t.Run("the invitee can read their own invitation", func(t *testing.T) {
 		res, body := invitee.GET("/organization/get-invitation?id=" + inv.ID)
@@ -486,7 +493,7 @@ func TestInvitationLifecycle(t *testing.T) {
 			t.Fatal(err)
 		}
 		late := env.Client()
-		late.SignUp("late@example.com", password)
+		env.MarkEmailVerified(late.SignUp("late@example.com", password).ID)
 		res, body = late.POST("/organization/accept-invitation", map[string]any{"invitationId": stale})
 		env.RequireErrorCode(res, body, http.StatusBadRequest, "INVITATION_EXPIRED")
 	})
@@ -497,7 +504,7 @@ func TestInvitationLifecycle(t *testing.T) {
 		id := box.last(t).ID
 
 		declines := env.Client()
-		declines.SignUp("nope@example.com", password)
+		env.MarkEmailVerified(declines.SignUp("nope@example.com", password).ID)
 		res, body = declines.POST("/organization/reject-invitation", map[string]any{"invitationId": id})
 		env.RequireStatus(res, body, http.StatusOK)
 
@@ -514,7 +521,7 @@ func TestInvitationLifecycle(t *testing.T) {
 		env.RequireStatus(res, body, http.StatusOK)
 
 		cancelled := env.Client()
-		cancelled.SignUp("cancelled@example.com", password)
+		env.MarkEmailVerified(cancelled.SignUp("cancelled@example.com", password).ID)
 		res, body = cancelled.POST("/organization/accept-invitation", map[string]any{"invitationId": id})
 		env.RequireErrorCode(res, body, http.StatusBadRequest, "INVITATION_EXPIRED")
 	})
@@ -791,7 +798,7 @@ func TestLimits(t *testing.T) {
 
 		// The limit counts organizations you own, not every account.
 		other := env.Client()
-		other.SignUp("other@example.com", password)
+		env.MarkEmailVerified(other.SignUp("other@example.com", password).ID)
 		res, body = other.POST("/organization/create", map[string]any{"name": "Theirs"})
 		env.RequireStatus(res, body, http.StatusOK)
 	})
@@ -823,7 +830,7 @@ func TestOrganizationCreationCanBeDisabled(t *testing.T) {
 		env.RequireErrorCode(res, body, http.StatusForbidden, "NOT_ALLOWED_TO_CREATE_ORGANIZATION")
 
 		allowed := env.Client()
-		allowed.SignUp("allowed@example.com", password)
+		env.MarkEmailVerified(allowed.SignUp("allowed@example.com", password).ID)
 		res, body = allowed.POST("/organization/create", map[string]any{"name": "Acme"})
 		env.RequireStatus(res, body, http.StatusOK)
 	})
@@ -987,4 +994,67 @@ func TestInviteMemberRejectsUnknownRole(t *testing.T) {
 		"email": "ok@example.com", "role": "admin", "organizationId": orgID,
 	})
 	env.RequireStatus(res, body, http.StatusOK)
+}
+
+// Regression test for the invitation verification bypass (H2): with
+// email verification not required for sign-up, anyone who learns a
+// pending invitation's id could sign up a fresh, unverified account
+// under the invitee's address and redeem the role meant for them.
+func TestUnverifiedAccountCannotAcceptInvitation(t *testing.T) {
+	env, _, box := newEnv(t)
+	org := createOrg(t, env, "Acme Corp", "acme")
+	orgID := org["id"].(string)
+
+	res, body := env.POST("/organization/invite-member", map[string]any{
+		"email": "cto@example.com", "role": organization.RoleAdmin,
+	})
+	env.RequireStatus(res, body, http.StatusOK)
+	invitationID := box.last(t).ID
+
+	imposter := env.Client()
+	user := imposter.SignUp("cto@example.com", password) // never verified
+
+	res, body = imposter.POST("/organization/accept-invitation", map[string]any{
+		"invitationId": invitationID,
+	})
+	env.RequireErrorCode(res, body, http.StatusForbidden, "EMAIL_NOT_VERIFIED")
+	if n := env.Count(organization.ModelMember, storage.W("organizationId", orgID)); n != 1 {
+		t.Fatalf("members = %d, want the unverified accept to have added none", n)
+	}
+
+	// Proving control of the address unblocks the invitation.
+	env.MarkEmailVerified(user.ID)
+	res, body = imposter.POST("/organization/accept-invitation", map[string]any{
+		"invitationId": invitationID,
+	})
+	env.RequireStatus(res, body, http.StatusOK)
+}
+
+// Companion to the H2 fix: plain members must not be able to enumerate
+// pending invitation ids, through the listing or the full-organization
+// view.
+func TestPlainMemberCannotSeePendingInvitations(t *testing.T) {
+	env, _, box := newEnv(t)
+	org := createOrg(t, env, "Acme Corp", "acme")
+	orgID := org["id"].(string)
+	member, _ := addMember(t, env, box, orgID, "member@example.com", organization.RoleMember)
+
+	res, body := env.POST("/organization/invite-member", map[string]any{"email": "pending@example.com"})
+	env.RequireStatus(res, body, http.StatusOK)
+
+	res, body = member.GET("/organization/list-invitations")
+	env.RequireErrorCode(res, body, http.StatusForbidden, "INSUFFICIENT_PERMISSION")
+
+	res, full := member.GET("/organization/get-full-organization?organizationId=" + orgID)
+	env.RequireStatus(res, full, http.StatusOK)
+	if invs, ok := full["invitations"].([]any); ok && len(invs) != 0 {
+		t.Fatalf("member sees %d pending invitations in get-full-organization, want none", len(invs))
+	}
+
+	// The owner still sees them.
+	res, full = env.GET("/organization/get-full-organization?organizationId=" + orgID)
+	env.RequireStatus(res, full, http.StatusOK)
+	if invs, _ := full["invitations"].([]any); len(invs) != 1 {
+		t.Fatalf("owner sees %v pending invitations, want 1", full["invitations"])
+	}
 }

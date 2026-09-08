@@ -153,6 +153,7 @@ func TestConcurrentOrgInvitationAccept(t *testing.T) {
 
 	invitee := secondClient(t, tc)
 	invitee.signUp("invitee@example.com", "password123", "Invitee")
+	markEmailVerified(t, auth, "invitee@example.com")
 
 	var wg sync.WaitGroup
 	for i := 0; i < 6; i++ {
