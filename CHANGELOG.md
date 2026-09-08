@@ -86,6 +86,34 @@ changes will require a major version.
   tokens are stored in clear, so accepting them made database read
   access equivalent to account takeover. Raw tokens now require the
   explicit `Options.AllowUnsignedTokens` migration switch.
+- **Native ID-token sign-in requires a server-minted nonce.** The nonce
+  was client-supplied and only compared to the token's own claim, so a
+  leaked provider ID token was a bearer credential until it expired.
+  Clients now fetch a single-use nonce from `POST /id-token/nonce`;
+  `Advanced.DisableIDTokenNonceCheck` stages migration.
+- **TOTP codes cannot be replayed.** The matched time-step is stored and
+  a code whose step is not strictly greater is refused, so a
+  shoulder-surfed code is no longer valid for the rest of its window.
+- **API keys are scoped.** An API-key session is never "fresh" and is
+  denied the account/admin-critical endpoints (`/set-password`,
+  `/delete-user`, `/change-password`, `/change-email`, `/admin/*`,
+  `/api-key/*`, `/two-factor/*`) by default; keys also take an optional
+  `scopes` allow-list. `Options.AllowSensitiveRoutes` opts back in.
+- **JWT `Verify` selects the key by `kid` and checks `iss`/`aud`.** It
+  used only the current signing key, so tokens signed before a rotation
+  or by another instance failed to verify though their key is still
+  published.
+- **Two-factor re-enrolment requires a current code**, wrong-guess
+  attempts are counted atomically, 2FA completion runs the sign-in
+  guards ordered after it, and the previously-ignored `trustDevice`
+  field is implemented (`Options.TrustDeviceDuration`).
+- **Admin impersonation is contained.** An impersonated session can no
+  longer use admin powers (which laundered the audit trail), and
+  impersonating a peer admin is refused by default.
+- **Change-email approval is unambiguous and two-step.** The callback
+  takes a `ChangeEmailVerification` struct with an explicit `SendTo`
+  (always the current address), and the new address must verify itself
+  before it gains recovery rights.
 
 ### Fixed
 - **Sign in with Apple completes.** Apple's `response_mode=form_post`
@@ -116,6 +144,35 @@ changes will require a major version.
   `/two-factor/verify-*` and `/organization/invite-member` ran at the
   100-req global default; they now carry the same strict per-IP limit as
   the core sign-in endpoints.
+- **Sign-up, OAuth new-user creation and DeleteUser are transactional.**
+  A failure between writing the user and its account no longer leaves an
+  address taken by a credential-less user; the in-memory adapter's
+  `Transaction` is now genuinely isolated and atomic; and DeleteUser
+  clears plugin-owned rows on adapters without enforced foreign keys.
+- **`Microsoft()` ID-token verification works for multi-tenant apps.**
+  The issuer was pinned to `.../common/v2.0`, which no real token carries
+  (they carry the tenant GUID); the `common`/`organizations`/`consumers`
+  aliases now validate the issuer's shape and bind it to the token's
+  `tid` claim.
+- **Sessions can be revoked by id.** `/revoke-session` and
+  `/admin/revoke-user-session` accept a `sessionId`, since listings omit
+  the raw token — so a user can revoke another device and an admin a
+  listed session.
+- **Documented-but-dead configuration now works or is gone.** Apple
+  generates its ES256 client secret from `TeamID`/`KeyID`/`PrivateKey`;
+  `oauth2.Spec.RedirectURI` is honoured; `apikey` `RateLimitMax/Window`
+  enforce a per-key budget; the two-factor `trustDevice` field works;
+  and `Advanced.DisableOriginCheckForPaths` matches route patterns.
+- **Assorted low-severity fixes:** ID-token/JWKS leeway and key-use
+  checks; a malformed `exp` is no longer treated as "never expires";
+  `Ctx.Error` logs the route pattern, not the token-bearing path;
+  timing-equalised `forget-password`/`send-verification-email`;
+  `idToken` encrypted at rest; `BaseURL` trailing slash trimmed; hasher
+  errors not reported as wrong passwords; magic-link enumeration and
+  attacker-chosen names closed; opt-in `verify-email` confirmation page;
+  SQL `nil` equality renders `IS NULL`; wildcard proxy trust works over
+  unix sockets. A non-ASCII/NFKC password-hash compatibility caveat with
+  better-auth is now documented.
 
 ### Security (existing)
 - `admin`: **free-form update maps are no longer a side door around

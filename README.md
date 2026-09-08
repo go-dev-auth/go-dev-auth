@@ -326,7 +326,7 @@ Fields contributed by plugins (`role`, `banned`, `twoFactorEnabled`, …) are ne
 
 ## Security model
 
-**Passwords.** scrypt (N=16384, r=16, p=1), better-auth's `salt:key` hex format. Each hash costs ~50 ms of CPU and ~32 MiB of scratch memory by design; the hasher bounds concurrency (default `GOMAXPROCS`) and pools its buffers so a burst of sign-ins cannot exhaust memory. Tune via `crypto.NewScryptHasher`.
+**Passwords.** scrypt (N=16384, r=16, p=1), better-auth's `salt:key` hex format. Each hash costs ~50 ms of CPU and ~32 MiB of scratch memory by design; the hasher bounds concurrency (default `GOMAXPROCS`) and pools its buffers so a burst of sign-ins cannot exhaust memory. Tune via `crypto.NewScryptHasher`. Hash format is byte-for-byte compatible with better-auth for ASCII passwords; non-ASCII passwords not already in Unicode NFKC form can differ, because better-auth normalizes to NFKC first and the standard library has no NFKC implementation to match without adding a dependency (see `ScryptHasher.Hash`).
 
 **Rate limiting is on by default** (fail-closed) because the sign-in endpoint is expensive by construction. Set `RateLimit.Disabled` only when a gateway already throttles these paths, and supply `RateLimit.Storage` when running more than one instance.
 

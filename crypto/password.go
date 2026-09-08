@@ -148,6 +148,17 @@ func (h *ScryptHasher) acquire() error {
 }
 
 // Hash hashes password with scrypt, producing "saltHex:keyHex".
+//
+// The password bytes are hashed as received. better-auth applies
+// Unicode NFKC normalization first, so a password containing non-ASCII
+// characters that are not already in NFKC form (some accented letters,
+// full-width forms, certain emoji sequences) produces a different hash
+// here than in better-auth. ASCII passwords — the overwhelming majority
+// — are unaffected and remain byte-for-byte compatible. NFKC is not
+// applied because the standard library has no NFKC implementation and
+// adding golang.org/x/text would break the zero-dependency guarantee;
+// applications that need exact cross-runtime parity for non-ASCII
+// passwords can normalize before calling, in a custom PasswordHasher.
 func (h *ScryptHasher) Hash(password string) (string, error) {
 	salt := make([]byte, saltSize)
 	if _, err := rand.Read(salt); err != nil {
