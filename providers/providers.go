@@ -13,8 +13,10 @@ package providers
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 
+	"github.com/go-dev-auth/go-dev-auth/crypto"
 	"github.com/go-dev-auth/go-dev-auth/oauth2"
 )
 
@@ -209,11 +211,7 @@ func MicrosoftTenant(c Credentials, tenant string) oauth2.Provider {
 		},
 		DefaultScopes: append([]string{"openid", "profile", "email", "offline_access"}, c.Scopes...),
 		UsePKCE:       true,
-		IDToken: &oauth2.IDTokenConfig{
-			Issuer:   "https://login.microsoftonline.com/" + tenant + "/v2.0",
-			JWKSURL:  base + "/discovery/v2.0/keys",
-			Audience: c.ClientID,
-		},
+		IDToken:       microsoftIDToken(c.ClientID, tenant, base),
 		MapProfile: func(raw map[string]any) *oauth2.UserProfile {
 			// Only an explicit provider claim counts as verification.
 			// Entra's "email" claim is user-settable, so treating its
@@ -227,6 +225,42 @@ func MicrosoftTenant(c Credentials, tenant string) oauth2.Provider {
 			}
 		},
 	})
+}
+
+// microsoftIDToken builds the ID-token config for a tenant. For the
+// multi-tenant aliases ("common", "organizations", "consumers") real
+// tokens never carry the alias in "iss" — they carry the user's tenant
+// GUID — so an exact issuer match failed closed and the ID-token path
+// was dead. Those aliases validate the issuer's shape instead and bind
+// it to the token's own "tid" claim.
+func microsoftIDToken(clientID, tenant, base string) *oauth2.IDTokenConfig {
+	cfg := &oauth2.IDTokenConfig{
+		Issuer:   "https://login.microsoftonline.com/" + tenant + "/v2.0",
+		JWKSURL:  base + "/discovery/v2.0/keys",
+		Audience: clientID,
+	}
+	switch tenant {
+	case "common", "organizations", "consumers":
+		cfg.ValidateIssuer = microsoftMultiTenantIssuer
+	}
+	return cfg
+}
+
+var microsoftIssuerRe = regexp.MustCompile(`^https://login\.microsoftonline\.com/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/v2\.0$`)
+
+// microsoftMultiTenantIssuer accepts an issuer of the documented Entra
+// shape whose tenant GUID equals the token's own tid claim. The tid
+// binding matters: the shape check alone would accept a token from any
+// Entra tenant, which for a multi-tenant app is the intended audience —
+// but the claims must at least agree with each other, and consumers of
+// the profile get a trustworthy tenant id in Raw["tid"].
+func microsoftMultiTenantIssuer(iss string, claims crypto.Claims) bool {
+	m := microsoftIssuerRe.FindStringSubmatch(iss)
+	if m == nil {
+		return false
+	}
+	tid, _ := claims["tid"].(string)
+	return tid != "" && strings.EqualFold(m[1], tid)
 }
 
 // GitLab returns the GitLab provider (gitlab.com).

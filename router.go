@@ -69,6 +69,7 @@ func (a *Auth) coreRoutes() []Route {
 
 		// social
 		{Method: http.MethodPost, Path: "/sign-in/social", Handler: a.handleSignInSocial, RateLimit: moderate},
+		{Method: http.MethodPost, Path: "/id-token/nonce", Handler: a.handleIDTokenNonce, RateLimit: moderate},
 		// The callback is driven by the provider, not the application:
 		// Apple (response_mode=form_post) delivers it as a cross-site
 		// POST from appleid.apple.com, which an origin check can only

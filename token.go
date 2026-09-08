@@ -15,6 +15,7 @@ const (
 	tokenKindChangeEmail   = "change-email"
 	tokenKindDeleteAccount = "delete-account"
 	tokenKindOAuthState    = "oauth-state"
+	tokenKindIDTokenNonce  = "id-token-nonce"
 )
 
 // tokenIdentifier is the value stored in the verification table's

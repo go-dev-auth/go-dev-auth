@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-dev-auth/go-dev-auth/crypto"
 	"github.com/go-dev-auth/go-dev-auth/oauth2"
 	"github.com/go-dev-auth/go-dev-auth/providers"
 )
@@ -307,5 +308,48 @@ func TestMicrosoftTenantIsScoped(t *testing.T) {
 	}
 	if !strings.Contains(p.Spec.IDToken.Issuer, "contoso.onmicrosoft.com") {
 		t.Errorf("issuer is not tenant-scoped: %q", p.Spec.IDToken.Issuer)
+	}
+}
+
+// Regression test for M12: Microsoft's multi-tenant aliases never
+// appear in a real token's iss (which carries the tenant GUID), so the
+// exact-match config made the ID-token path fail closed on every token.
+func TestMicrosoftMultiTenantIssuer(t *testing.T) {
+	p, ok := providers.Microsoft(providers.Credentials{ClientID: "c"}).(*oauth2.StdProvider)
+	if !ok || p.Spec.IDToken == nil {
+		t.Fatal("Microsoft provider has no ID token config")
+	}
+	vi := p.Spec.IDToken.ValidateIssuer
+	if vi == nil {
+		t.Fatal("common tenant has no ValidateIssuer: real tokens can never match the alias issuer")
+	}
+	const tid = "9188040d-6c67-4c5b-b112-36a304b66dad"
+	good := "https://login.microsoftonline.com/" + tid + "/v2.0"
+	if !vi(good, crypto.Claims{"tid": tid}) {
+		t.Fatalf("real-shaped issuer %q rejected", good)
+	}
+	for name, tc := range map[string]struct {
+		iss string
+		tid string
+	}{
+		"alias issuer": {"https://login.microsoftonline.com/common/v2.0", tid},
+		"tid mismatch": {good, "00000000-0000-0000-0000-000000000000"},
+		"missing tid":  {good, ""},
+		"wrong host":   {"https://evil.example.com/" + tid + "/v2.0", tid},
+		"not a guid":   {"https://login.microsoftonline.com/evil/v2.0", "evil"},
+	} {
+		claims := crypto.Claims{}
+		if tc.tid != "" {
+			claims["tid"] = tc.tid
+		}
+		if vi(tc.iss, claims) {
+			t.Errorf("%s: issuer %q accepted", name, tc.iss)
+		}
+	}
+
+	// A concrete tenant keeps the exact match.
+	pt := providers.MicrosoftTenant(providers.Credentials{ClientID: "c"}, tid).(*oauth2.StdProvider)
+	if pt.Spec.IDToken.ValidateIssuer != nil {
+		t.Fatal("concrete tenant should pin the issuer exactly")
 	}
 }

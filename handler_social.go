@@ -59,6 +59,19 @@ func (a *Auth) handleSignInSocial(c *Ctx) error {
 			return NewAPIError(http.StatusBadRequest, "ID_TOKEN_NOT_SUPPORTED",
 				"Provider does not support id_token verification")
 		}
+		// The nonce must be one this server minted (single-use, from
+		// /id-token/nonce) and it must appear inside the signed token.
+		// Comparing the token's nonce to a client-echoed copy proved
+		// nothing — a replayer copies both together — so a leaked ID
+		// token was a bearer credential until exp.
+		if body.IDToken.Nonce == "" {
+			if !a.config.Advanced.DisableIDTokenNonceCheck {
+				return NewAPIError(http.StatusBadRequest, "NONCE_REQUIRED",
+					"Obtain a nonce from /id-token/nonce and include it in the provider sign-in request")
+			}
+		} else if _, err := a.ConsumeToken(c.Context(), tokenKindIDTokenNonce, body.IDToken.Nonce); err != nil {
+			return ErrInvalidToken
+		}
 		profile, valid := verifier.VerifyIDToken(c.Context(), body.IDToken.Token, body.IDToken.Nonce)
 		if !valid {
 			return ErrInvalidToken
@@ -102,6 +115,19 @@ func (a *Auth) handleSignInSocial(c *Ctx) error {
 		return c.JSON(http.StatusOK, map[string]any{"url": authURL, "redirect": false})
 	}
 	return c.JSON(http.StatusOK, map[string]any{"url": authURL, "redirect": true})
+}
+
+// handleIDTokenNonce mints a single-use nonce for the native ID-token
+// sign-in flow: the client passes it to the provider SDK, the provider
+// embeds it in the ID token it issues, and /sign-in/social consumes it.
+// A token replayed later, or minted without asking this server first,
+// is refused.
+func (a *Auth) handleIDTokenNonce(c *Ctx) error {
+	nonce, err := a.StoreToken(c.Context(), tokenKindIDTokenNonce, "1", 10*time.Minute)
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusOK, map[string]any{"nonce": nonce})
 }
 
 // startOAuthFlow mints the state, binds it to this browser with a

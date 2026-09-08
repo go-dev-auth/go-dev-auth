@@ -371,6 +371,13 @@ type AdvancedConfig struct {
 	IPAddressHeaders []string
 	// GenerateID overrides ID generation for database records.
 	GenerateID func(model string) string
+	// DisableIDTokenNonceCheck restores the pre-fix native ID-token
+	// sign-in that required no server-minted nonce. With it set, a
+	// leaked or stolen provider ID token for this client is a working
+	// sign-in credential until it expires — leave this off and have
+	// clients fetch a nonce from /id-token/nonce instead; it exists
+	// only to stage migrations of existing native apps.
+	DisableIDTokenNonceCheck bool
 	// DisableOriginCheckForPaths lists paths exempt from CSRF checks.
 	DisableOriginCheckForPaths []string
 	// DisableAutoMigrate stops New from creating tables and indexes,
