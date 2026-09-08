@@ -135,6 +135,37 @@ func (a *Auth) startOAuthFlow(c *Ctx, provider oauth2.Provider, st oauthState, l
 	return state, authURL, nil
 }
 
+// OAuthFlowOptions parameterises StartOAuthFlow. Callback URLs are
+// validated against the trusted-origin policy when the callback fires,
+// exactly as for /sign-in/social.
+type OAuthFlowOptions struct {
+	CallbackURL        string
+	NewUserCallbackURL string
+	ErrorCallbackURL   string
+	Scopes             []string
+	RequestSignUp      bool
+	LoginHint          string
+}
+
+// StartOAuthFlow begins an authorization flow for provider on behalf of
+// a plugin (SSO, custom sign-in surfaces): it mints the single-use
+// state, binds it to this browser with the state cookie, applies PKCE,
+// and returns the authorization URL to send the user to. The provider
+// must be resolvable by Auth.SocialProvider under the same id when the
+// callback arrives — configured, or contributed by the plugin's own
+// ProviderSourcePlugin implementation.
+func (a *Auth) StartOAuthFlow(c *Ctx, provider oauth2.Provider, opts OAuthFlowOptions) (string, error) {
+	_, authURL, err := a.startOAuthFlow(c, provider, oauthState{
+		Provider:           provider.ID(),
+		CallbackURL:        opts.CallbackURL,
+		NewUserCallbackURL: opts.NewUserCallbackURL,
+		ErrorCallbackURL:   opts.ErrorCallbackURL,
+		RequestSignUp:      opts.RequestSignUp,
+		Scopes:             opts.Scopes,
+	}, opts.LoginHint)
+	return authURL, err
+}
+
 // CallbackURL returns the redirect URI to register with a provider's
 // developer console for the given provider id, e.g.
 //

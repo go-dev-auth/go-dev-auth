@@ -89,6 +89,11 @@ func NewWith(t *testing.T, configure func(*godevauth.Config)) *Env {
 	return &Env{T: t, Auth: auth, Server: server, client: newClient()}
 }
 
+// HTTPClient exposes this client's underlying http.Client (cookies
+// included), for tests that must follow an external redirect — an OAuth
+// provider's consent hop — while keeping the browser identity.
+func (e *Env) HTTPClient() *http.Client { return e.client }
+
 // Client returns a second, independent client: a different browser or
 // device for the same server. Use it to test one user acting on
 // another's data, which is where authorization bugs hide.
