@@ -340,6 +340,16 @@ func (a *Auth) resolveOAuthUser(ctx context.Context, providerID string, profile 
 				return nil, false, NewAPIError(http.StatusUnauthorized, "ACCOUNT_NOT_LINKED",
 					"Account not linked. Sign in with your original method, then link this provider from your account settings.")
 			}
+			// The local account must have proven the address too.
+			// Without this, an attacker pre-registers the victim's
+			// email with a password (no verification required by
+			// default) and waits; the victim's first Google sign-in
+			// then lands inside the attacker's account, password
+			// access and all.
+			if !existing.EmailVerified {
+				return nil, false, NewAPIError(http.StatusUnauthorized, "ACCOUNT_NOT_LINKED",
+					"Account not linked. Sign in with your original method, verify your email, then link this provider from your account settings.")
+			}
 			if err := a.linkOAuthAccount(ctx, existing, providerID, profile, tokens); err != nil {
 				return nil, false, err
 			}

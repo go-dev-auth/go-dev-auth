@@ -15,6 +15,22 @@
 // one fails. Supply a schema only when using the adapter standalone,
 // without godevauth.New.
 //
+// # Foreign keys and cascading deletes
+//
+// Schema foreign keys carry ON DELETE CASCADE so rows owned by a
+// deleted user (plugin tables included) go with them. Two engines need
+// a word of care. SQLite ships with foreign-key enforcement OFF per
+// connection: open the database with the pragma enabled or the
+// cascades silently do nothing —
+//
+//	sql.Open("sqlite3", "file:auth.db?_fk=1")            // mattn/go-sqlite3
+//	sql.Open("sqlite", "file:auth.db?_pragma=foreign_keys(1)") // modernc.org/sqlite
+//
+// MySQL discards column-inline REFERENCES clauses, so the MySQL dialect
+// emits table-level FOREIGN KEY constraints instead; tables created by
+// versions that predate this fix have no enforced constraints — run
+// PendingMigrationSQL or recreate the tables to pick them up.
+//
 // # Migrations
 //
 // Migrate is idempotent and does two things: it creates missing tables

@@ -509,3 +509,44 @@ func secondClient(t *testing.T, tc *testClient) *testClient {
 		},
 	}
 }
+
+// Regression test for M9: mail-sending and code-guessing plugin routes
+// must carry the strict rate limit, not the 100-req global default.
+func TestPluginSensitiveRoutesAreStrictlyRateLimited(t *testing.T) {
+	plugins := []godevauth.Plugin{
+		magiclink.New(magiclink.Options{
+			SendMagicLink: func(ctx context.Context, email, url, token string) error { return nil },
+		}),
+		twofactor.New(twofactor.Options{
+			SendOTP: func(ctx context.Context, user *storage.User, code string) error { return nil },
+		}),
+		organization.New(organization.Options{}),
+	}
+	want := map[string]bool{
+		"/sign-in/magic-link":            true,
+		"/magic-link/verify":             true,
+		"/two-factor/verify-totp":        true,
+		"/two-factor/verify-backup-code": true,
+		"/two-factor/send-otp":           true,
+		"/two-factor/verify-otp":         true,
+		"/organization/invite-member":    true,
+	}
+	for _, p := range plugins {
+		for _, rt := range p.Routes() {
+			if !want[rt.Path] {
+				continue
+			}
+			delete(want, rt.Path)
+			if rt.RateLimit == nil {
+				t.Errorf("%s has no route-level rate limit", rt.Path)
+				continue
+			}
+			if rt.RateLimit.Max > 5 || rt.RateLimit.Window < 10*time.Second {
+				t.Errorf("%s rate limit = %d/%v, want a strict rule", rt.Path, rt.RateLimit.Max, rt.RateLimit.Window)
+			}
+		}
+	}
+	for path := range want {
+		t.Errorf("route %s not registered by any plugin", path)
+	}
+}

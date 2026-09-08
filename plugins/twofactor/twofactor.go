@@ -18,6 +18,7 @@ import (
 
 	godevauth "github.com/go-dev-auth/go-dev-auth"
 	"github.com/go-dev-auth/go-dev-auth/crypto"
+	"github.com/go-dev-auth/go-dev-auth/ratelimit"
 	"github.com/go-dev-auth/go-dev-auth/storage"
 )
 
@@ -133,18 +134,22 @@ func (p *Plugin) ReencryptSecrets(ctx context.Context) (godevauth.ReencryptResul
 
 // Routes implements godevauth.Plugin.
 func (p *Plugin) Routes() []godevauth.Route {
+	// M9: code-verification endpoints are online guessing oracles (a
+	// 6-digit TOTP survives ~90s) and send-otp emails on demand; all
+	// carry the strict per-IP limit the core sign-in endpoints use.
+	strict := &ratelimit.Rule{Window: 10 * time.Second, Max: 3}
 	routes := []godevauth.Route{
 		{Method: http.MethodPost, Path: "/two-factor/enable", Handler: p.handleEnable},
 		{Method: http.MethodPost, Path: "/two-factor/disable", Handler: p.handleDisable},
 		{Method: http.MethodPost, Path: "/two-factor/get-totp-uri", Handler: p.handleGetTOTPURI},
-		{Method: http.MethodPost, Path: "/two-factor/verify-totp", Handler: p.handleVerifyTOTP},
+		{Method: http.MethodPost, Path: "/two-factor/verify-totp", Handler: p.handleVerifyTOTP, RateLimit: strict},
 		{Method: http.MethodPost, Path: "/two-factor/generate-backup-codes", Handler: p.handleGenerateBackupCodes},
-		{Method: http.MethodPost, Path: "/two-factor/verify-backup-code", Handler: p.handleVerifyBackupCode},
+		{Method: http.MethodPost, Path: "/two-factor/verify-backup-code", Handler: p.handleVerifyBackupCode, RateLimit: strict},
 	}
 	if p.opts.SendOTP != nil {
 		routes = append(routes,
-			godevauth.Route{Method: http.MethodPost, Path: "/two-factor/send-otp", Handler: p.handleSendOTP},
-			godevauth.Route{Method: http.MethodPost, Path: "/two-factor/verify-otp", Handler: p.handleVerifyOTP},
+			godevauth.Route{Method: http.MethodPost, Path: "/two-factor/send-otp", Handler: p.handleSendOTP, RateLimit: strict},
+			godevauth.Route{Method: http.MethodPost, Path: "/two-factor/verify-otp", Handler: p.handleVerifyOTP, RateLimit: strict},
 		)
 	}
 	return routes

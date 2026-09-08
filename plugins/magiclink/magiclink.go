@@ -12,6 +12,7 @@ import (
 
 	godevauth "github.com/go-dev-auth/go-dev-auth"
 	"github.com/go-dev-auth/go-dev-auth/crypto"
+	"github.com/go-dev-auth/go-dev-auth/ratelimit"
 	"github.com/go-dev-auth/go-dev-auth/storage"
 )
 
@@ -64,9 +65,14 @@ func (p *Plugin) Init(a *godevauth.Auth) error {
 
 // Routes implements godevauth.Plugin.
 func (p *Plugin) Routes() []godevauth.Route {
+	// M9: both endpoints are attacker-facing oracles — one sends email
+	// on demand, the other consumes guessable tokens — so they carry
+	// the same strict limit as /sign-in/email rather than the global
+	// default (which allowed ~600 emails/minute/IP).
+	strict := &ratelimit.Rule{Window: 10 * time.Second, Max: 3}
 	return []godevauth.Route{
-		{Method: http.MethodPost, Path: "/sign-in/magic-link", Handler: p.handleSignIn},
-		{Method: http.MethodGet, Path: "/magic-link/verify", Handler: p.handleVerify},
+		{Method: http.MethodPost, Path: "/sign-in/magic-link", Handler: p.handleSignIn, RateLimit: strict},
+		{Method: http.MethodGet, Path: "/magic-link/verify", Handler: p.handleVerify, RateLimit: strict},
 	}
 }
 

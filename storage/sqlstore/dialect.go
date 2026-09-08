@@ -117,7 +117,7 @@ func CreateTableSQL(d Dialect, t *storage.Table) string {
 				col += " DEFAULT " + def
 			}
 		}
-		if f.References != nil {
+		if f.References != nil && d.Name() != "mysql" {
 			col += fmt.Sprintf(" REFERENCES %s(%s)",
 				d.Quote(f.References.Model), d.Quote(f.References.Field))
 			if strings.EqualFold(f.References.OnDelete, "cascade") {
@@ -125,6 +125,23 @@ func CreateTableSQL(d Dialect, t *storage.Table) string {
 			}
 		}
 		cols = append(cols, col)
+	}
+	// MySQL parses a column-inline REFERENCES clause and then silently
+	// discards it (documented InnoDB behaviour), so every foreign key
+	// there — cascades included — was a no-op. Table-level FOREIGN KEY
+	// constraints are what MySQL actually enforces.
+	if d.Name() == "mysql" {
+		for _, f := range t.Fields {
+			if f.References == nil {
+				continue
+			}
+			fk := fmt.Sprintf("FOREIGN KEY (%s) REFERENCES %s(%s)",
+				d.Quote(f.Name), d.Quote(f.References.Model), d.Quote(f.References.Field))
+			if strings.EqualFold(f.References.OnDelete, "cascade") {
+				fk += " ON DELETE CASCADE"
+			}
+			cols = append(cols, fk)
+		}
 	}
 	// Composite unique constraints are table-level, so they are declared
 	// inline in every dialect. On a fresh table this is the whole story;

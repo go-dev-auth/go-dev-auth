@@ -16,6 +16,7 @@ import (
 
 	godevauth "github.com/go-dev-auth/go-dev-auth"
 	"github.com/go-dev-auth/go-dev-auth/crypto"
+	"github.com/go-dev-auth/go-dev-auth/ratelimit"
 	"github.com/go-dev-auth/go-dev-auth/storage"
 )
 
@@ -201,7 +202,10 @@ func (p *Plugin) Routes() []godevauth.Route {
 		{Method: http.MethodPost, Path: "/organization/set-active", Handler: p.handleSetActive},
 		{Method: http.MethodGet, Path: "/organization/get-full-organization", Handler: p.handleGetFull},
 		{Method: http.MethodPost, Path: "/organization/check-slug", Handler: p.handleCheckSlug},
-		{Method: http.MethodPost, Path: "/organization/invite-member", Handler: p.handleInviteMember},
+		// M9: sends email on demand; strict-limited like the other
+		// mail-sending endpoints.
+		{Method: http.MethodPost, Path: "/organization/invite-member", Handler: p.handleInviteMember,
+			RateLimit: &ratelimit.Rule{Window: 10 * time.Second, Max: 3}},
 		{Method: http.MethodPost, Path: "/organization/accept-invitation", Handler: p.handleAcceptInvitation},
 		{Method: http.MethodPost, Path: "/organization/reject-invitation", Handler: p.handleRejectInvitation},
 		{Method: http.MethodPost, Path: "/organization/cancel-invitation", Handler: p.handleCancelInvitation},

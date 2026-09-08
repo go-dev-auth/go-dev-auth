@@ -52,22 +52,39 @@ func TestSignInAdvertisesTheTokenInAHeader(t *testing.T) {
 func TestBearerTokenAuthenticatesWithoutACookie(t *testing.T) {
 	env, raw, signed := newEnv(t)
 
-	for name, token := range map[string]string{
-		"raw session token":   raw,
-		"signed cookie value": signed,
-	} {
-		t.Run(name, func(t *testing.T) {
-			// A fresh client holds no cookies, so only the header can
-			// account for a session appearing.
-			client := env.Client()
-			res, body := client.GET("/get-session", "Authorization", "Bearer "+token)
-			env.RequireStatus(res, body, http.StatusOK)
-			user, _ := body["user"].(map[string]any)
-			if user == nil || user["email"] != "mobile@example.com" {
-				t.Fatalf("session = %v, want mobile@example.com", body)
-			}
-		})
-	}
+	t.Run("signed cookie value", func(t *testing.T) {
+		// A fresh client holds no cookies, so only the header can
+		// account for a session appearing.
+		client := env.Client()
+		res, body := client.GET("/get-session", "Authorization", "Bearer "+signed)
+		env.RequireStatus(res, body, http.StatusOK)
+		user, _ := body["user"].(map[string]any)
+		if user == nil || user["email"] != "mobile@example.com" {
+			t.Fatalf("session = %v, want mobile@example.com", body)
+		}
+	})
+
+	// Regression test for M7: raw session tokens are stored in clear,
+	// so accepting them by default made bearer the weakest credential
+	// in the system — database read access became account takeover.
+	t.Run("raw session token is refused by default", func(t *testing.T) {
+		client := env.Client()
+		res, body := client.GET("/get-session", "Authorization", "Bearer "+raw)
+		env.RequireStatus(res, body, http.StatusOK)
+		if body["user"] != nil {
+			t.Fatalf("a raw token authenticated under the default options: %v", body)
+		}
+	})
+
+	t.Run("raw session token works only when explicitly allowed", func(t *testing.T) {
+		optIn, raw2, _ := newEnv(t, bearer.Options{AllowUnsignedTokens: true})
+		client := optIn.Client()
+		res, body := client.GET("/get-session", "Authorization", "Bearer "+raw2)
+		optIn.RequireStatus(res, body, http.StatusOK)
+		if body["user"] == nil {
+			t.Fatalf("raw token rejected despite AllowUnsignedTokens: %v", body)
+		}
+	})
 }
 
 func TestForgedOrMalformedTokensDoNotAuthenticate(t *testing.T) {

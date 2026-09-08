@@ -435,3 +435,42 @@ func TestDefaultLiteralEscapesBackslashOnMySQL(t *testing.T) {
 		t.Fatalf("odd number of backslashes leaves the quote escapable: %s", lit)
 	}
 }
+
+// Regression test for M11: MySQL parses column-inline REFERENCES
+// clauses and silently discards them, so every foreign key — cascades
+// included — was a no-op there. DeleteUser only cleans core tables
+// explicitly; plugin rows (2FA secrets, API keys, org memberships) rely
+// on the database cascade, which therefore must be a table-level
+// FOREIGN KEY constraint on MySQL.
+func TestMySQLForeignKeysAreTableLevel(t *testing.T) {
+	schema := storage.CoreSchema()
+	sql := CreateTableSQL(MySQL, schema.Tables[storage.ModelSession])
+	if !strings.Contains(sql, "FOREIGN KEY (`userId`) REFERENCES `user`(`id`) ON DELETE CASCADE") {
+		t.Errorf("mysql session DDL missing table-level foreign key:\n%s", sql)
+	}
+	if strings.Contains(sql, "`userId` VARCHAR(255) NOT NULL REFERENCES") {
+		t.Errorf("mysql DDL still carries an inline (ignored) REFERENCES clause:\n%s", sql)
+	}
+
+	// A column added by migration gets its constraint via ADD CONSTRAINT.
+	table := schema.Tables[storage.ModelSession]
+	var userID storage.Field
+	for _, f := range table.Fields {
+		if f.Name == "userId" {
+			userID = f
+		}
+	}
+	stmts := AddColumnSQL(MySQL, table, userID)
+	joined := strings.Join(stmts, "\n")
+	if !strings.Contains(joined, "ADD CONSTRAINT `fk_session_userId` FOREIGN KEY (`userId`) REFERENCES `user`(`id`) ON DELETE CASCADE") {
+		t.Errorf("mysql ADD COLUMN migration missing foreign key constraint:\n%s", joined)
+	}
+
+	// Postgres and SQLite keep their (enforced) inline clauses.
+	for _, d := range []Dialect{Postgres, SQLite} {
+		sql := CreateTableSQL(d, schema.Tables[storage.ModelSession])
+		if !strings.Contains(sql, `REFERENCES "user"("id") ON DELETE CASCADE`) {
+			t.Errorf("%s DDL lost its inline foreign key:\n%s", d.Name(), sql)
+		}
+	}
+}

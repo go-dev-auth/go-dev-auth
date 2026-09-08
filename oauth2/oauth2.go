@@ -160,8 +160,15 @@ func (p *StdProvider) client() *http.Client {
 	if p.Spec.HTTPClient != nil {
 		return p.Spec.HTTPClient
 	}
-	return http.DefaultClient
+	return defaultHTTPClient
 }
+
+// defaultHTTPClient bounds every provider call (Exchange, UserInfo,
+// RefreshToken) that the application did not supply its own client for.
+// http.DefaultClient has no timeout, and the request context is the
+// inbound request's — undeadlined on most servers — so a hung identity
+// provider used to pin a goroutine (and its scrypt slot) indefinitely.
+var defaultHTTPClient = &http.Client{Timeout: 15 * time.Second}
 
 // AuthorizationURL implements Provider.
 func (p *StdProvider) AuthorizationURL(req AuthorizeRequest) (string, error) {

@@ -171,7 +171,8 @@ func AddColumnSQL(d Dialect, t *storage.Table, f storage.Field) []string {
 	if def != "" {
 		col += " DEFAULT " + def
 	}
-	if f.References != nil {
+	mysql := d.Name() == "mysql"
+	if f.References != nil && !mysql {
 		col += fmt.Sprintf(" REFERENCES %s(%s)",
 			d.Quote(f.References.Model), d.Quote(f.References.Field))
 		if strings.EqualFold(f.References.OnDelete, "cascade") {
@@ -180,6 +181,17 @@ func AddColumnSQL(d Dialect, t *storage.Table, f storage.Field) []string {
 	}
 
 	out := []string{fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s;", d.Quote(t.Name), col)}
+	// MySQL ignores inline REFERENCES clauses (see CreateTableSQL), so
+	// the constraint goes in as a separate, explicitly named ALTER.
+	if f.References != nil && mysql {
+		fk := fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY (%s) REFERENCES %s(%s)",
+			d.Quote(t.Name), d.Quote("fk_"+t.Name+"_"+f.Name),
+			d.Quote(f.Name), d.Quote(f.References.Model), d.Quote(f.References.Field))
+		if strings.EqualFold(f.References.OnDelete, "cascade") {
+			fk += " ON DELETE CASCADE"
+		}
+		out = append(out, fk+";")
+	}
 	switch {
 	case f.Unique && sqlite:
 		out = append(out, fmt.Sprintf("CREATE UNIQUE INDEX IF NOT EXISTS %s ON %s (%s);",

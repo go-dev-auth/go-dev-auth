@@ -199,3 +199,52 @@ func TestAccountLinkingUntrusted(t *testing.T) {
 		t.Fatal("expected no session for untrusted linking")
 	}
 }
+
+// Regression test for M2: even a trusted provider asserting a verified
+// email must not auto-link into a local account that never verified the
+// address. The attack: pre-register the victim's email with a password
+// (verification not required by default), wait for the victim to sign
+// in with Google, and inherit them into the attacker's account.
+func TestTrustedLinkingRequiresVerifiedLocalAccount(t *testing.T) {
+	provider, _ := fakeProvider(t, "fakeco", map[string]any{
+		"id": "fake-3", "name": "Victim", "email": "victim2@example.com",
+		"email_verified": true,
+	})
+	auth, tc := newTestAuth(t, func(cfg *godevauth.Config) {
+		cfg.SocialProviders = []oauth2.Provider{provider}
+		cfg.Account.AccountLinking.TrustedProviders = []string{"fakeco"}
+	})
+	// The attacker's pre-registered, never verified account.
+	tc.signUp("victim2@example.com", "password123", "Attacker")
+	tc.post("/sign-out", map[string]any{})
+
+	social := func() string {
+		res, body := tc.post("/sign-in/social", map[string]any{"provider": "fakeco"})
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("sign-in/social: %d %v", res.StatusCode, body)
+		}
+		authURL, _ := body["url"].(string)
+		res2, _ := tc.client.Get(authURL)
+		res2.Body.Close()
+		res3, _ := tc.client.Get(res2.Header.Get("Location"))
+		res3.Body.Close()
+		return res3.Header.Get("Location")
+	}
+
+	if final := social(); !strings.Contains(final, "ACCOUNT_NOT_LINKED") {
+		t.Fatalf("expected ACCOUNT_NOT_LINKED for an unverified local account, got %q", final)
+	}
+	if _, session := tc.get("/get-session"); session != nil {
+		t.Fatal("expected no session when the local account is unverified")
+	}
+
+	// Once the local account has proven the address, the trusted link
+	// goes through.
+	markEmailVerified(t, auth, "victim2@example.com")
+	if final := social(); strings.Contains(final, "ACCOUNT_NOT_LINKED") {
+		t.Fatalf("expected linking to succeed for a verified local account, got %q", final)
+	}
+	if _, session := tc.get("/get-session"); session == nil {
+		t.Fatal("expected a session after trusted linking")
+	}
+}
