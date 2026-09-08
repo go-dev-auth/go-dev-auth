@@ -140,11 +140,17 @@ func rawBody(t *testing.T, tc *testClient, path string) string {
 // end: the approval link stored one token kind and the verify endpoint
 // looked up another, so a verified user could never change their email.
 func TestChangeEmailFlow(t *testing.T) {
-	var approveToken, sentTo string
+	var approveToken, approvalSentTo, approvalNewEmail string
+	var verifyToken, verifySentTo string
 	auth, tc := newTestAuth(t, func(cfg *godevauth.Config) {
 		cfg.User.ChangeEmail.Enabled = true
-		cfg.User.ChangeEmail.SendChangeEmailVerification = func(ctx context.Context, user *storage.User, newEmail, url, token string) error {
-			approveToken, sentTo = token, newEmail
+		cfg.User.ChangeEmail.SendChangeEmailVerification = func(ctx context.Context, req godevauth.ChangeEmailVerification) error {
+			approveToken, approvalSentTo, approvalNewEmail = req.Token, req.SendTo, req.NewEmail
+			return nil
+		}
+		// The new address gets its own verification email after approval.
+		cfg.EmailVerification.SendVerificationEmail = func(ctx context.Context, user *storage.User, url, token string) error {
+			verifyToken, verifySentTo = token, user.Email
 			return nil
 		}
 	})
@@ -158,8 +164,13 @@ func TestChangeEmailFlow(t *testing.T) {
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("change-email: %d %v", res.StatusCode, out)
 	}
-	if approveToken == "" || sentTo != "new@example.com" {
-		t.Fatalf("approval email not sent correctly (token=%q, to=%q)", approveToken, sentTo)
+	// M15: the approval link must go to the CURRENT address, not the new
+	// one — sending it to the new address is the takeover footgun.
+	if approveToken == "" || approvalSentTo != "old@example.com" {
+		t.Fatalf("approval must be sent to the current address, got to=%q", approvalSentTo)
+	}
+	if approvalNewEmail != "new@example.com" {
+		t.Fatalf("NewEmail = %q, want new@example.com", approvalNewEmail)
 	}
 
 	// address must not change until the link is followed
@@ -176,11 +187,23 @@ func TestChangeEmailFlow(t *testing.T) {
 	if user.Email != "new@example.com" {
 		t.Fatalf("email not applied after approval: %s", user.Email)
 	}
-	if !user.EmailVerified {
-		t.Error("new address should be marked verified")
+	// M15 defence in depth: the new address is not verified on approval
+	// alone; it must confirm its own verification email first.
+	if user.EmailVerified {
+		t.Error("new address should NOT be verified until it confirms its own email")
+	}
+	if verifyToken == "" || verifySentTo != "new@example.com" {
+		t.Fatalf("a verification email should go to the new address, got to=%q", verifySentTo)
 	}
 
-	// the token is single use
+	// Confirming the new address's own verification completes the move.
+	res, _ = tc.get("/verify-email?token=" + url.QueryEscape(verifyToken))
+	user, _ = auth.FindUserByID(context.Background(), userID)
+	if !user.EmailVerified {
+		t.Error("new address should be verified after confirming its own email")
+	}
+
+	// the approval token is single use
 	res, _ = tc.get("/verify-email?token=" + url.QueryEscape(approveToken))
 	if res.StatusCode == http.StatusOK {
 		t.Error("approval token should be single use")

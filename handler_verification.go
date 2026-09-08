@@ -94,9 +94,14 @@ func (a *Auth) handleVerifyEmail(c *Ctx) error {
 			return NewAPIError(http.StatusBadRequest, "COULDNT_UPDATE_YOUR_EMAIL",
 				"That email address is no longer available")
 		}
+		// Approval from the current address confirms intent, but the new
+		// address has not yet proven control, so it lands unverified and
+		// gets its own verification email below. Marking it verified on
+		// this click alone would hand full recovery rights (password
+		// reset) to an address that was never demonstrated.
 		updated, err := a.store.UpdateUser(ctx, user.ID, map[string]any{
 			"email":         normalizeEmail(newEmail),
-			"emailVerified": true,
+			"emailVerified": false,
 		})
 		if err != nil {
 			if isUniqueViolation(err) {
@@ -106,6 +111,9 @@ func (a *Auth) handleVerifyEmail(c *Ctx) error {
 			return err
 		}
 		a.EmitEvent(c, Event{Type: EventEmailChanged, ActorID: updated.ID, Email: updated.Email})
+		if a.config.EmailVerification.SendVerificationEmail != nil {
+			_ = a.sendVerificationEmail(ctx, updated, callbackURL)
+		}
 		if h := a.config.EmailVerification.OnEmailVerification; h != nil {
 			_ = h(ctx, updated)
 		}

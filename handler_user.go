@@ -88,7 +88,13 @@ func (a *Auth) handleChangeEmail(c *Ctx) error {
 		if body.CallbackURL != "" {
 			approveURL = withQuery(approveURL, "callbackURL", body.CallbackURL)
 		}
-		if err := send(ctx, sd.User, newEmail, approveURL, token); err != nil {
+		if err := send(ctx, ChangeEmailVerification{
+			User:     sd.User,
+			SendTo:   sd.User.Email, // current, verified address — never newEmail
+			NewEmail: newEmail,
+			URL:      approveURL,
+			Token:    token,
+		}); err != nil {
 			return NewAPIError(http.StatusInternalServerError, "FAILED_TO_SEND_EMAIL", "Failed to send email")
 		}
 		// Moving a verified address relocates the account's recovery

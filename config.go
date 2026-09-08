@@ -283,12 +283,33 @@ type UserConfig struct {
 	DeleteUser DeleteUserConfig
 }
 
+// ChangeEmailVerification carries everything the change-email approval
+// callback needs. SendTo is called out explicitly because getting it
+// wrong is a takeover: the approval link must go to the current,
+// already-verified address (SendTo), never to NewEmail. Emailing the
+// link to NewEmail would let anyone holding a stolen session relocate
+// the account to an address they control.
+type ChangeEmailVerification struct {
+	// User is the account whose address is changing.
+	User *storage.User
+	// SendTo is the address the approval link MUST be delivered to: the
+	// current, verified address. It is always equal to User.Email.
+	SendTo string
+	// NewEmail is the address the user asked to switch to. Show it to
+	// the user for context; it is NOT where the link goes.
+	NewEmail string
+	// URL is the approval link, and Token the raw token inside it.
+	URL   string
+	Token string
+}
+
 // ChangeEmailConfig controls the change email flow.
 type ChangeEmailConfig struct {
 	Enabled bool
-	// SendChangeEmailVerification is called with the current email to
-	// approve a change when the current email is verified.
-	SendChangeEmailVerification func(ctx context.Context, user *storage.User, newEmail, url, token string) error
+	// SendChangeEmailVerification delivers the approval link for a
+	// change of a verified address. Send req.URL to req.SendTo (the
+	// current, verified address) — see ChangeEmailVerification.
+	SendChangeEmailVerification func(ctx context.Context, req ChangeEmailVerification) error
 }
 
 // DeleteUserConfig controls user deletion.
