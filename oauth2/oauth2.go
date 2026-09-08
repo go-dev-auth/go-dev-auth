@@ -97,7 +97,16 @@ type Spec struct {
 	// ClientID and ClientSecret are the app credentials.
 	ClientID     string
 	ClientSecret string
-	// RedirectURI overrides the default {baseURL}/callback/{id}.
+	// ClientSecretFunc, when set, is called to produce the client
+	// secret for each token request, overriding ClientSecret. Sign in
+	// with Apple uses it: Apple's "client secret" is a short-lived
+	// ES256 JWT that must be regenerated, not a fixed string.
+	ClientSecretFunc func(ctx context.Context) (string, error)
+	// RedirectURI overrides the default {baseURL}/callback/{id} used as
+	// the OAuth redirect_uri. When set it takes precedence over the URI
+	// the host passes in, for providers registered with a redirect that
+	// is not the library's default callback path. The application is
+	// responsible for routing that URI back to the callback handler.
 	RedirectURI string
 	// Endpoints are the provider endpoints.
 	Endpoints Endpoints
@@ -181,7 +190,7 @@ func (p *StdProvider) AuthorizationURL(req AuthorizeRequest) (string, error) {
 	q := u.Query()
 	q.Set("response_type", "code")
 	q.Set("client_id", p.Spec.ClientID)
-	q.Set("redirect_uri", req.RedirectURI)
+	q.Set("redirect_uri", p.redirectURI(req.RedirectURI))
 	q.Set("state", req.State)
 	if len(scopes) > 0 {
 		q.Set("scope", strings.Join(dedupe(scopes), p.Spec.ScopeSeparator))
@@ -208,11 +217,31 @@ func (p *StdProvider) Exchange(ctx context.Context, code, codeVerifier, redirect
 	form := url.Values{}
 	form.Set("grant_type", "authorization_code")
 	form.Set("code", code)
-	form.Set("redirect_uri", redirectURI)
+	form.Set("redirect_uri", p.redirectURI(redirectURI))
 	if p.Spec.UsePKCE && codeVerifier != "" {
 		form.Set("code_verifier", codeVerifier)
 	}
 	return p.tokenRequest(ctx, form)
+}
+
+// redirectURI prefers the Spec's own RedirectURI when set, so a
+// provider registered with a non-default redirect uses it consistently
+// in both the authorization request and the token exchange.
+func (p *StdProvider) redirectURI(fallback string) string {
+	if p.Spec.RedirectURI != "" {
+		return p.Spec.RedirectURI
+	}
+	return fallback
+}
+
+// clientSecret resolves the client secret for a token request,
+// preferring the dynamic ClientSecretFunc (Apple's ES256 JWT) over the
+// static ClientSecret.
+func (p *StdProvider) clientSecret(ctx context.Context) (string, error) {
+	if p.Spec.ClientSecretFunc != nil {
+		return p.Spec.ClientSecretFunc(ctx)
+	}
+	return p.Spec.ClientSecret, nil
 }
 
 // RefreshToken implements RefreshableProvider.
@@ -224,12 +253,16 @@ func (p *StdProvider) RefreshToken(ctx context.Context, refreshToken string) (*T
 }
 
 func (p *StdProvider) tokenRequest(ctx context.Context, form url.Values) (*Tokens, error) {
+	secret, err := p.clientSecret(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if p.Spec.AuthStyleInHeader {
 		// credentials in Authorization header
 	} else {
 		form.Set("client_id", p.Spec.ClientID)
-		if p.Spec.ClientSecret != "" {
-			form.Set("client_secret", p.Spec.ClientSecret)
+		if secret != "" {
+			form.Set("client_secret", secret)
 		}
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.Spec.Endpoints.TokenURL,
@@ -240,7 +273,7 @@ func (p *StdProvider) tokenRequest(ctx context.Context, form url.Values) (*Token
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 	if p.Spec.AuthStyleInHeader {
-		req.SetBasicAuth(url.QueryEscape(p.Spec.ClientID), url.QueryEscape(p.Spec.ClientSecret))
+		req.SetBasicAuth(url.QueryEscape(p.Spec.ClientID), url.QueryEscape(secret))
 	}
 	res, err := p.client().Do(req)
 	if err != nil {

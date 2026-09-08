@@ -12,9 +12,14 @@ package providers
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/x509"
+	"encoding/pem"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/go-dev-auth/go-dev-auth/crypto"
 	"github.com/go-dev-auth/go-dev-auth/oauth2"
@@ -422,14 +427,30 @@ func X(c Credentials) oauth2.Provider {
 	})
 }
 
-// AppleConfig configures Sign in with Apple. Apple requires a JWT client
-// secret; either provide a pre-generated ClientSecret or the key
-// parameters to generate one per exchange.
+// AppleConfig configures Sign in with Apple. Apple's "client secret" is
+// not a fixed string but a short-lived ES256 JWT signed with the private
+// key from the Apple developer portal. Provide either a pre-generated
+// ClientSecret, or TeamID + KeyID + PrivateKey to have one generated and
+// re-generated automatically for each token exchange.
 type AppleConfig struct {
 	ClientID     string
 	ClientSecret string
 	RedirectURI  string
 	Scopes       []string
+	// TeamID is the Apple developer Team ID (the "iss" of the client
+	// secret JWT).
+	TeamID string
+	// KeyID is the ID of the private key registered with Apple (the JWT
+	// header "kid").
+	KeyID string
+	// PrivateKey is the PEM-encoded PKCS#8 EC private key downloaded
+	// from Apple (the .p8 file contents). When set together with TeamID
+	// and KeyID, the client secret is generated per exchange.
+	PrivateKey string
+	// ClientSecretExpiry bounds the generated secret's lifetime. Apple
+	// caps it at 6 months; defaults to 1 hour, which is regenerated each
+	// exchange anyway.
+	ClientSecretExpiry time.Duration
 }
 
 // Apple returns the Sign in with Apple provider. The user profile is
@@ -441,11 +462,16 @@ func Apple(c AppleConfig) oauth2.Provider {
 		JWKSURL:  "https://appleid.apple.com/auth/keys",
 		Audience: c.ClientID,
 	}
+	var secretFunc func(ctx context.Context) (string, error)
+	if c.PrivateKey != "" && c.TeamID != "" && c.KeyID != "" {
+		secretFunc = appleClientSecretFunc(c)
+	}
 	return oauth2.New(oauth2.Spec{
-		ProviderID:   "apple",
-		ClientID:     c.ClientID,
-		ClientSecret: c.ClientSecret,
-		RedirectURI:  c.RedirectURI,
+		ProviderID:       "apple",
+		ClientID:         c.ClientID,
+		ClientSecret:     c.ClientSecret,
+		ClientSecretFunc: secretFunc,
+		RedirectURI:      c.RedirectURI,
 		Endpoints: oauth2.Endpoints{
 			AuthorizationURL: "https://appleid.apple.com/auth/authorize",
 			TokenURL:         "https://appleid.apple.com/auth/token",
@@ -471,6 +497,48 @@ func Apple(c AppleConfig) oauth2.Provider {
 			return profile, nil
 		},
 	})
+}
+
+// appleClientSecretFunc builds a generator for Apple's ES256 client
+// secret JWT. Apple requires: header {alg:ES256, kid:KeyID}; claims
+// iss=TeamID, iat, exp (<=6 months), aud=https://appleid.apple.com,
+// sub=ClientID. It is signed with the .p8 private key.
+func appleClientSecretFunc(c AppleConfig) func(ctx context.Context) (string, error) {
+	return func(ctx context.Context) (string, error) {
+		key, err := parseECPrivateKey(c.PrivateKey)
+		if err != nil {
+			return "", fmt.Errorf("apple: parsing PrivateKey: %w", err)
+		}
+		ttl := c.ClientSecretExpiry
+		if ttl <= 0 || ttl > 6*30*24*time.Hour {
+			ttl = time.Hour
+		}
+		now := time.Now()
+		return crypto.SignJWT(key, c.KeyID, crypto.Claims{
+			"iss": c.TeamID,
+			"iat": now.Unix(),
+			"exp": now.Add(ttl).Unix(),
+			"aud": "https://appleid.apple.com",
+			"sub": c.ClientID,
+		})
+	}
+}
+
+// parseECPrivateKey parses a PEM-encoded PKCS#8 (Apple .p8) or SEC1 EC
+// private key.
+func parseECPrivateKey(pemStr string) (*ecdsa.PrivateKey, error) {
+	block, _ := pem.Decode([]byte(pemStr))
+	if block == nil {
+		return nil, errors.New("no PEM block found")
+	}
+	if key, err := x509.ParsePKCS8PrivateKey(block.Bytes); err == nil {
+		ec, ok := key.(*ecdsa.PrivateKey)
+		if !ok {
+			return nil, fmt.Errorf("PKCS#8 key is %T, not an EC key", key)
+		}
+		return ec, nil
+	}
+	return x509.ParseECPrivateKey(block.Bytes)
 }
 
 func firstNonEmpty(vals ...string) string {

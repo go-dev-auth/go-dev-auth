@@ -1,6 +1,14 @@
 package providers_test
 
 import (
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -351,5 +359,74 @@ func TestMicrosoftMultiTenantIssuer(t *testing.T) {
 	pt := providers.MicrosoftTenant(providers.Credentials{ClientID: "c"}, tid).(*oauth2.StdProvider)
 	if pt.Spec.IDToken.ValidateIssuer != nil {
 		t.Fatal("concrete tenant should pin the issuer exactly")
+	}
+}
+
+// Regression test for the Apple dead-config: with TeamID/KeyID/
+// PrivateKey set, the provider generates a valid ES256 client-secret
+// JWT per exchange (previously the doc promised this but no signing
+// path existed).
+func TestAppleGeneratesClientSecret(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
+
+	var gotSecret string
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		gotSecret = r.Form.Get("client_secret")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"a","token_type":"bearer","id_token":""}`))
+	}))
+	defer idp.Close()
+
+	p := providers.Apple(providers.AppleConfig{
+		ClientID: "com.example.app", TeamID: "TEAM123456", KeyID: "KEY1234567",
+		PrivateKey: string(pemBytes),
+	}).(*oauth2.StdProvider)
+	// Point the token endpoint at the test server.
+	p.Spec.Endpoints.TokenURL = idp.URL + "/token"
+
+	if _, err := p.Exchange(context.Background(), "code", "verifier", "https://app/callback"); err != nil {
+		t.Fatalf("exchange: %v", err)
+	}
+	if gotSecret == "" || strings.Count(gotSecret, ".") != 2 {
+		t.Fatalf("client_secret is not a JWT: %q", gotSecret)
+	}
+	// It verifies against the public key and carries Apple's claims.
+	claims, err := crypto.VerifyJWT(&key.PublicKey, gotSecret)
+	if err != nil {
+		t.Fatalf("generated client secret does not verify: %v", err)
+	}
+	if claims["iss"] != "TEAM123456" || claims["sub"] != "com.example.app" || claims["aud"] != "https://appleid.apple.com" {
+		t.Fatalf("client secret claims = %v", claims)
+	}
+}
+
+// The Spec.RedirectURI override (previously dead) is now used in the
+// authorization URL.
+func TestSpecRedirectURIOverride(t *testing.T) {
+	p := oauth2.New(oauth2.Spec{
+		ProviderID: "x", ClientID: "c",
+		Endpoints:   oauth2.Endpoints{AuthorizationURL: "https://idp/authorize"},
+		RedirectURI: "https://custom/callback",
+	})
+	authURL, err := p.AuthorizationURL(oauth2.AuthorizeRequest{
+		RedirectURI: "https://default/callback", State: "s",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(authURL, url.QueryEscape("https://custom/callback")) {
+		t.Fatalf("auth URL did not use Spec.RedirectURI: %q", authURL)
+	}
+	if strings.Contains(authURL, url.QueryEscape("https://default/callback")) {
+		t.Fatalf("auth URL used the fallback despite Spec.RedirectURI: %q", authURL)
 	}
 }
