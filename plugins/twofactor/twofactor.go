@@ -64,6 +64,11 @@ type Options struct {
 	// SkipVerificationOnEnable enables 2FA immediately without
 	// verifying a TOTP code first.
 	SkipVerificationOnEnable bool
+	// TrustDeviceDuration is how long a "trust this device" grant lets
+	// the same browser skip the second factor. Zero disables the
+	// feature, so the trustDevice request field is honoured only when a
+	// duration is set. Defaults to 0 (off).
+	TrustDeviceDuration time.Duration
 }
 
 // Plugin implements the two-factor plugin.
@@ -118,6 +123,10 @@ func (p *Plugin) Schema(s *storage.Schema) {
 			References: &storage.Reference{Model: storage.ModelUser, Field: "id", OnDelete: "cascade"}},
 		{Name: "secret", Type: storage.FieldText, Required: true},
 		{Name: "backupCodes", Type: storage.FieldText},
+		// lastCounter is the TOTP time-step of the most recently
+		// accepted code. A code whose counter is not strictly greater is
+		// refused, so a code cannot be reused inside its skew window.
+		{Name: "lastCounter", Type: storage.FieldInt, Default: 0},
 	}})
 }
 
@@ -175,6 +184,11 @@ func (p *Plugin) BeforeSignIn(c *godevauth.Ctx, user *storage.User) (bool, error
 	if !enabled {
 		return false, nil
 	}
+	// A trusted device skips the challenge entirely: the user proved a
+	// second factor here before and asked to be remembered.
+	if p.deviceTrusted(c, user.ID) {
+		return false, nil
+	}
 	token, err := p.auth.StoreToken(c.Context(), tokenKindPending, user.ID, pendingTTL)
 	if err != nil {
 		return false, err
@@ -194,6 +208,71 @@ const (
 	// a 6-digit code cannot be brute-forced within its lifetime.
 	maxVerifyAttempts = 5
 )
+
+// ---- trusted devices ----
+
+const (
+	trustDeviceCookieName = "two_factor_trust"
+	trustDevicePurpose    = "two-factor-trust-device"
+)
+
+func (p *Plugin) trustCookieName() string {
+	return p.auth.Config().Advanced.CookiePrefix + "." + trustDeviceCookieName
+}
+
+// setTrustedDevice records, in a signed cookie on this browser, that the
+// user completed a second factor and asked to be trusted. The cookie
+// carries the user id and an absolute expiry, both covered by the
+// signature, so it cannot be edited to name another user or extended.
+func (p *Plugin) setTrustedDevice(c *godevauth.Ctx, userID string) {
+	if p.opts.TrustDeviceDuration <= 0 {
+		return
+	}
+	exp := time.Now().Add(p.opts.TrustDeviceDuration).Unix()
+	payload := userID + "|" + strconv.FormatInt(exp, 10)
+	value := payload + "|" + crypto.SignHMACPurpose(p.auth.Config().Secret, trustDevicePurpose, payload)
+	http.SetCookie(c.W, &http.Cookie{
+		Name:     p.trustCookieName(),
+		Value:    value,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   strings.HasPrefix(p.auth.Config().BaseURL, "https://"),
+		MaxAge:   int(p.opts.TrustDeviceDuration / time.Second),
+	})
+}
+
+// deviceTrusted reports whether this browser holds a valid, unexpired
+// trust grant for userID.
+func (p *Plugin) deviceTrusted(c *godevauth.Ctx, userID string) bool {
+	if p.opts.TrustDeviceDuration <= 0 {
+		return false
+	}
+	cookie, err := c.R.Cookie(p.trustCookieName())
+	if err != nil || cookie.Value == "" {
+		return false
+	}
+	id, rest, ok := strings.Cut(cookie.Value, "|")
+	if !ok {
+		return false
+	}
+	expStr, sig, ok := strings.Cut(rest, "|")
+	if !ok {
+		return false
+	}
+	payload := id + "|" + expStr
+	if !crypto.VerifyHMACPurpose(p.auth.Config().Secret, trustDevicePurpose, payload, sig) {
+		return false
+	}
+	if id != userID {
+		return false
+	}
+	exp, err := strconv.ParseInt(expStr, 10, 64)
+	if err != nil || time.Now().Unix() >= exp {
+		return false
+	}
+	return true
+}
 
 const pendingCookieName = "two_factor_pending"
 
@@ -257,8 +336,18 @@ func parsePendingValue(value string) (userID string, attempts int) {
 // within the challenge's lifetime.
 func (p *Plugin) failAttempt(c *godevauth.Ctx, ch *pendingChallenge) error {
 	ctx := c.Context()
-	if ch.attempts+1 >= maxVerifyAttempts {
-		_, _ = p.auth.ConsumeToken(ctx, tokenKindPending, ch.token)
+	// Claim this attempt by consuming the challenge token first: the
+	// delete is atomic, so racing wrong guesses serialise here instead
+	// of each reading the same count and all writing count+1 — which
+	// let more than maxVerifyAttempts guesses through on a real
+	// database. The loser of the race sees the token already gone and
+	// is refused without advancing the count on its behalf.
+	value, err := p.auth.ConsumeToken(ctx, tokenKindPending, ch.token)
+	if err != nil {
+		return godevauth.ErrUnauthorized
+	}
+	_, attempts := parsePendingValue(value)
+	if attempts+1 >= maxVerifyAttempts {
 		http.SetCookie(c.W, p.pendingCookie("", -1))
 		p.auth.EmitEvent(c, godevauth.Event{
 			Type: godevauth.EventTwoFactorVerified, Outcome: godevauth.OutcomeFailure,
@@ -273,14 +362,16 @@ func (p *Plugin) failAttempt(c *godevauth.Ctx, ch *pendingChallenge) error {
 		Type: godevauth.EventTwoFactorVerified, Outcome: godevauth.OutcomeFailure,
 		Reason: godevauth.ReasonInvalidTwoFactor, ActorID: ch.user.ID, Email: ch.user.Email,
 	})
+	// Reinstate the challenge with the advanced count so the next guess
+	// against the same cookie continues from here.
 	_ = p.auth.StoreTokenValue(ctx, tokenKindPending, ch.token,
-		ch.user.ID+"|"+strconv.Itoa(ch.attempts+1), pendingTTL)
+		ch.user.ID+"|"+strconv.Itoa(attempts+1), pendingTTL)
 	return godevauth.NewAPIError(http.StatusUnauthorized, "INVALID_TWO_FACTOR_CODE",
 		"Invalid two factor code")
 }
 
 // completePending issues the session after successful verification.
-func (p *Plugin) completePending(c *godevauth.Ctx, ch *pendingChallenge) error {
+func (p *Plugin) completePending(c *godevauth.Ctx, ch *pendingChallenge, trustDevice bool) error {
 	// Consume the challenge first: if two requests race, only the one
 	// that removes the token proceeds.
 	if _, err := p.auth.ConsumeToken(c.Context(), tokenKindPending, ch.token); err != nil {
@@ -292,6 +383,18 @@ func (p *Plugin) completePending(c *godevauth.Ctx, ch *pendingChallenge) error {
 		Type: godevauth.EventTwoFactorVerified, ActorID: ch.user.ID,
 		Email: ch.user.Email, Method: methodTwoFactor,
 	})
+	// Hand off to any sign-in guards ordered after this plugin, rather
+	// than minting the session directly and skipping them. With 2FA the
+	// only guard this is a no-op; with a further guard registered after
+	// it (another challenge, a device check), that guard now runs.
+	if handled, err := p.auth.RunSignInGuardsAfter(c, ch.user, p.ID()); err != nil {
+		return err
+	} else if handled {
+		return nil
+	}
+	if trustDevice {
+		p.setTrustedDevice(c, ch.user.ID)
+	}
 	sess, err := p.auth.CreateSessionFor(c, ch.user, true)
 	if err != nil {
 		return err
@@ -309,6 +412,69 @@ func (p *Plugin) completePending(c *godevauth.Ctx, ch *pendingChallenge) error {
 // record loads the twoFactor row for a user.
 func (p *Plugin) record(ctx context.Context, userID string) (map[string]any, error) {
 	return p.auth.Storage().FindOne(ctx, ModelTwoFactor, []storage.Where{storage.W("userId", userID)})
+}
+
+// claimCounter advances the stored lastCounter to counter, but only if
+// counter is strictly greater than what is stored — a compare-and-set
+// so two requests presenting the same code cannot both win. It returns
+// false when the code is a replay (not newer) or when another request
+// claimed the same step first.
+func (p *Plugin) claimCounter(ctx context.Context, rec map[string]any, counter int64) bool {
+	last := recordInt(rec["lastCounter"])
+	if counter <= last {
+		return false
+	}
+	n, err := p.auth.Storage().UpdateMany(ctx, ModelTwoFactor,
+		[]storage.Where{storage.W("id", rec["id"]), storage.W("lastCounter", last)},
+		map[string]any{"lastCounter": counter})
+	return err == nil && n == 1
+}
+
+func recordInt(v any) int64 {
+	switch n := v.(type) {
+	case int64:
+		return n
+	case int:
+		return int64(n)
+	case float64:
+		return int64(n)
+	}
+	return 0
+}
+
+// twoFactorActive reports whether the user currently has 2FA enabled.
+func (p *Plugin) twoFactorActive(u *storage.User) bool {
+	enabled, _ := u.Extra["twoFactorEnabled"].(bool)
+	return enabled
+}
+
+// verifyExistingFactor checks code against the user's current TOTP
+// secret or an unused backup code, without consuming a backup code —
+// this only proves possession before a re-enrolment.
+func (p *Plugin) verifyExistingFactor(ctx context.Context, userID, code string) bool {
+	if code == "" {
+		return false
+	}
+	rec, err := p.record(ctx, userID)
+	if err != nil {
+		return false
+	}
+	if secret, err := p.decryptSecret(rec); err == nil {
+		if crypto.VerifyTOTP(secret, code, time.Now(), p.opts.TOTPPeriod, p.opts.TOTPDigits, p.opts.Skew) {
+			return true
+		}
+	}
+	enc, _ := rec["backupCodes"].(string)
+	id, _ := rec["id"].(string)
+	if codes, err := p.decryptBackupCodes(id, enc); err == nil {
+		want := strings.TrimSpace(strings.ToLower(code))
+		for _, bc := range codes {
+			if crypto.ConstantTimeEqual(bc, want) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (p *Plugin) verifyPassword(c *godevauth.Ctx, userID, password string) error {
@@ -344,6 +510,17 @@ func (p *Plugin) handleEnable(c *godevauth.Ctx) error {
 		return err
 	}
 	ctx := c.Context()
+	// L9: if 2FA is already active, re-enrolling replaces the secret and
+	// backup codes, which silently locks out the user's authenticator
+	// and revokes their codes. Requiring a current code (or an unused
+	// backup code) proves the caller controls the existing factor, not
+	// just the password and a live cookie.
+	if p.twoFactorActive(sd.User) {
+		if !p.verifyExistingFactor(ctx, sd.User.ID, body.Code) {
+			return godevauth.NewAPIError(http.StatusUnauthorized, "CURRENT_CODE_REQUIRED",
+				"Enter a current code from your authenticator to change your two-factor setup")
+		}
+	}
 	// The row id is generated first, not by the insert: both values are
 	// sealed against it, so it has to be known before they are
 	// encrypted.
@@ -369,6 +546,9 @@ func (p *Plugin) handleEnable(c *godevauth.Ctx) error {
 		"userId":      sd.User.ID,
 		"secret":      encSecret,
 		"backupCodes": encCodes,
+		// Stored explicitly so the replay compare-and-set has a value to
+		// match on every adapter, not just those that apply defaults.
+		"lastCounter": int64(0),
 	}); err != nil {
 		return err
 	}
@@ -514,10 +694,18 @@ func (p *Plugin) handleVerifyTOTP(c *godevauth.Ctx) error {
 		if err != nil {
 			return err
 		}
-		if !crypto.VerifyTOTP(secret, body.Code, time.Now(), p.opts.TOTPPeriod, p.opts.TOTPDigits, p.opts.Skew) {
+		counter, ok := crypto.VerifyTOTPCounter(secret, body.Code, time.Now(), p.opts.TOTPPeriod, p.opts.TOTPDigits, p.opts.Skew)
+		if !ok {
 			return p.failAttempt(c, ch)
 		}
-		return p.completePending(c, ch)
+		// M5: a code whose time-step is not newer than the last accepted
+		// one is a replay (a shoulder-surfed code stays valid ~90s
+		// otherwise). Claim the counter with a compare-and-set; losing
+		// the race counts as a replay too.
+		if !p.claimCounter(c.Context(), rec, counter) {
+			return p.failAttempt(c, ch)
+		}
+		return p.completePending(c, ch, body.TrustDevice)
 	}
 
 	sd, err := c.RequireSession()
@@ -590,7 +778,7 @@ func (p *Plugin) handleVerifyOTP(c *godevauth.Ctx) error {
 		return p.failAttempt(c, ch)
 	}
 	_ = p.auth.DeleteVerificationValue(c.Context(), verification.ID)
-	return p.completePending(c, ch)
+	return p.completePending(c, ch, body.TrustDevice)
 }
 
 func (p *Plugin) generateBackupCodes() []string {
@@ -705,7 +893,7 @@ func (p *Plugin) handleVerifyBackupCode(c *godevauth.Ctx) error {
 		return godevauth.NewAPIError(http.StatusConflict, "RETRY",
 			"Backup codes changed concurrently, please try again")
 	}
-	return p.completePending(c, ch)
+	return p.completePending(c, ch, body.TrustDevice)
 }
 
 var _ godevauth.SignInGuard = (*Plugin)(nil)

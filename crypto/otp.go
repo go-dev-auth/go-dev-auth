@@ -83,6 +83,17 @@ func TOTP(secret string, t time.Time, period int, digits int) (string, error) {
 // VerifyTOTP checks code against the secret allowing skew steps of clock
 // drift in both directions.
 func VerifyTOTP(secret, code string, t time.Time, period, digits, skew int) bool {
+	_, ok := VerifyTOTPCounter(secret, code, t, period, digits, skew)
+	return ok
+}
+
+// VerifyTOTPCounter is VerifyTOTP that also returns the time-step
+// counter the code matched. The caller persists it and refuses any
+// later code whose counter is not strictly greater, which is what turns
+// a one-time password into an actually one-time one: without it a
+// shoulder-surfed or phished code stays valid for the whole skew window
+// (RFC 6238 §5.2).
+func VerifyTOTPCounter(secret, code string, t time.Time, period, digits, skew int) (int64, bool) {
 	if period <= 0 {
 		period = 30
 	}
@@ -94,13 +105,13 @@ func VerifyTOTP(secret, code string, t time.Time, period, digits, skew int) bool
 		}
 		want, err := HOTP(secret, uint64(c), digits)
 		if err != nil {
-			return false
+			return 0, false
 		}
 		if ConstantTimeEqual(want, code) {
-			return true
+			return c, true
 		}
 	}
-	return false
+	return 0, false
 }
 
 // GenerateTOTPSecret returns a new random base32 encoded TOTP secret.

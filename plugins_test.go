@@ -156,8 +156,11 @@ func TestTwoFactorFlow(t *testing.T) {
 		t.Fatal("expected consumed backup code to fail")
 	}
 
-	// disable
-	code, _ = crypto.TOTP(secret, time.Now(), 30, 6)
+	// disable. The earlier sign-in already consumed this time step's
+	// code (replay protection now rejects a reused one), so present the
+	// next step's code — still within the skew window, with a strictly
+	// greater counter.
+	code, _ = crypto.TOTP(secret, time.Now().Add(30*time.Second), 30, 6)
 	tc.post("/two-factor/verify-totp", map[string]any{"code": code})
 	res, _ = tc.post("/two-factor/disable", map[string]any{"password": "password123"})
 	if res.StatusCode != http.StatusOK {

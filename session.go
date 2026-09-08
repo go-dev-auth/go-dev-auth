@@ -83,6 +83,39 @@ func (a *Auth) createSession(c *Ctx, user *storage.User, rememberMe bool, extra 
 	return a.createSessionWithDuration(c, user, rememberMe, extra, a.config.Session.ExpiresIn)
 }
 
+// RunSignInGuardsAfter runs the sign-in guards for plugins ordered
+// after afterPluginID, so a plugin that took over a sign-in (a
+// two-factor challenge) can hand control to any guards that would have
+// run after it, instead of minting the session directly and skipping
+// them. handled=true means a later guard wrote its own response (a
+// chained factor), so the caller must not create a session.
+//
+// It deliberately runs only the guards *after* afterPluginID: re-running
+// the whole chain would re-trigger the very guard that is completing.
+func (a *Auth) RunSignInGuardsAfter(c *Ctx, user *storage.User, afterPluginID string) (handled bool, err error) {
+	seen := false
+	for _, p := range a.config.Plugins {
+		if !seen {
+			if p.ID() == afterPluginID {
+				seen = true
+			}
+			continue
+		}
+		guard, ok := p.(SignInGuard)
+		if !ok {
+			continue
+		}
+		done, err := guard.BeforeSignIn(c, user)
+		if err != nil {
+			return false, err
+		}
+		if done {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (a *Auth) createSessionWithDuration(c *Ctx, user *storage.User, rememberMe bool, extra map[string]any, duration time.Duration) (*storage.Session, error) {
 	if duration <= 0 {
 		duration = a.config.Session.ExpiresIn
