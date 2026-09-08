@@ -353,13 +353,25 @@ func (a *Adapter) buildWhere(t *storage.Table, where []storage.Where, startIdx i
 		col := a.dialect.Quote(w.Field)
 		switch op {
 		case storage.OpEq:
-			expr = col + " = " + a.dialect.Placeholder(idx)
-			args = append(args, a.encode(f, w.Value))
-			idx++
+			// "col = NULL" is never true in SQL, so a nil equality has to
+			// become "col IS NULL" or it silently matches nothing — while
+			// the memory and Mongo adapters do match nil == nil, so the
+			// three adapters would disagree.
+			if w.Value == nil {
+				expr = col + " IS NULL"
+			} else {
+				expr = col + " = " + a.dialect.Placeholder(idx)
+				args = append(args, a.encode(f, w.Value))
+				idx++
+			}
 		case storage.OpNe:
-			expr = col + " <> " + a.dialect.Placeholder(idx)
-			args = append(args, a.encode(f, w.Value))
-			idx++
+			if w.Value == nil {
+				expr = col + " IS NOT NULL"
+			} else {
+				expr = col + " <> " + a.dialect.Placeholder(idx)
+				args = append(args, a.encode(f, w.Value))
+				idx++
+			}
 		case storage.OpGt, storage.OpGte, storage.OpLt, storage.OpLte:
 			sym := map[storage.Operator]string{
 				storage.OpGt: ">", storage.OpGte: ">=", storage.OpLt: "<", storage.OpLte: "<=",

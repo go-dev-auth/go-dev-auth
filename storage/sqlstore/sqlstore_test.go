@@ -474,3 +474,31 @@ func TestMySQLForeignKeysAreTableLevel(t *testing.T) {
 		}
 	}
 }
+
+// Regression test for L15: a nil-valued equality must render "IS NULL",
+// not "col = NULL" (which never matches), so it agrees with the memory
+// and Mongo adapters.
+func TestNilEqualityRendersIsNull(t *testing.T) {
+	schema := storage.CoreSchema()
+	a := New(nil, Postgres, schema)
+	sql, args, err := a.buildWhere(schema.Tables[storage.ModelUser],
+		[]storage.Where{storage.W("image", nil)}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sql, "IS NULL") || strings.Contains(sql, "= $") {
+		t.Fatalf("nil equality rendered as %q, want IS NULL", sql)
+	}
+	if len(args) != 0 {
+		t.Fatalf("IS NULL should bind no args, got %v", args)
+	}
+
+	sql, _, err = a.buildWhere(schema.Tables[storage.ModelUser],
+		[]storage.Where{{Field: "image", Operator: storage.OpNe, Value: nil}}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sql, "IS NOT NULL") {
+		t.Fatalf("nil inequality rendered as %q, want IS NOT NULL", sql)
+	}
+}

@@ -678,11 +678,19 @@ func parseTrustedProxies(entries []string) (*trustedProxySet, error) {
 
 // contains reports whether ip is one of the configured proxies.
 func (s *trustedProxySet) contains(ip net.IP) bool {
-	if s == nil || ip == nil {
+	if s == nil {
 		return false
 	}
+	// "*" trusts every peer, including one with no parseable address: a
+	// front proxy connected over a unix socket has an empty RemoteAddr,
+	// and requiring the wildcard to still refuse it made proxy trust
+	// dead behind unix sockets. A specific CIDR list still cannot match
+	// a nil IP.
 	if s.all {
 		return true
+	}
+	if ip == nil {
+		return false
 	}
 	for _, n := range s.nets {
 		if n.Contains(ip) {
