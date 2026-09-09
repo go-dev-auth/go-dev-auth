@@ -10,7 +10,7 @@ the oldest supported and current Go, the race detector, lint, a fuzz
 pass over the attacker-facing parsers, and the storage conformance
 suite against **real SQLite, PostgreSQL and MySQL servers**.
 
-A comprehensive, framework-agnostic authentication library for Go, modeled after [better-auth](https://github.com/better-auth/better-auth). Email & password, social sign-on, sessions, account linking, two-factor auth, magic links, organizations, admin tooling, API keys and JWT — with **zero external dependencies** (pure standard library).
+A comprehensive, framework-agnostic authentication library for Go, modeled after [better-auth](https://github.com/better-auth/better-auth). Email & password, social sign-on, sessions, account linking, two-factor auth, passkeys, magic links, organizations, SSO, admin tooling, API keys and JWT — with **zero external dependencies** (pure standard library).
 
 ```
 go get github.com/go-dev-auth/go-dev-auth
@@ -34,10 +34,12 @@ go get github.com/go-dev-auth/go-dev-auth
 **Plugins** (mirroring better-auth's plugin system)
 
 - `twofactor` — TOTP, email OTP and backup codes
+- `passkey` — WebAuthn passkeys, CBOR/COSE parsing included (no external dependency)
 - `magiclink` — passwordless email links
 - `organization` — orgs, members, roles, invitations, teams
+- `sso` — bring-your-own OIDC identity provider, matched by email domain
 - `admin` — user management, bans, roles, impersonation
-- `apikey` — hashed API keys that authenticate like sessions
+- `apikey` — hashed API keys with scopes that authenticate like sessions
 - `jwt` — EdDSA-signed JWTs + JWKS endpoint
 - `bearer` — Authorization header auth for non-browser clients
 
@@ -280,9 +282,9 @@ All endpoints live under `Config.BasePath` (default `/api/auth`) and match bette
 | Area | Endpoints |
 |---|---|
 | Email & password | `POST /sign-up/email`, `POST /sign-in/email`, `POST /forget-password`, `POST /reset-password`, `GET /reset-password/:token`, `POST /change-password`, `POST /set-password` |
-| Email verification | `POST /send-verification-email`, `GET /verify-email` |
-| Session | `GET /get-session`, `POST /sign-out`, `GET /list-sessions`, `POST /revoke-session`, `POST /revoke-sessions`, `POST /revoke-other-sessions` |
-| Social | `POST /sign-in/social`, `GET|POST /callback/:provider`, `POST /link-social`, `POST /unlink-account`, `GET /list-accounts`, `POST /refresh-token`, `GET /account-info` |
+| Email verification | `POST /send-verification-email`, `GET /verify-email` (renders a confirmation page instead of consuming the token when `EmailVerification.ConfirmationPage` is set), `POST /verify-email` (consumes it) |
+| Session | `GET /get-session`, `POST /sign-out`, `GET /list-sessions`, `POST /revoke-session` (by `token`, or by the `sessionId` from `/list-sessions`), `POST /revoke-sessions`, `POST /revoke-other-sessions` |
+| Social | `POST /sign-in/social`, `GET|POST /callback/:provider`, `POST /id-token/nonce` (mints the nonce native ID-token sign-in must echo), `POST /link-social`, `POST /unlink-account`, `GET /list-accounts`, `POST /refresh-token`, `GET /account-info` |
 | User | `POST /update-user`, `POST /change-email`, `POST /delete-user`, `GET|POST /delete-user/callback` (GET confirms, POST deletes) |
 | Two-factor | `POST /two-factor/{enable,disable,get-totp-uri,verify-totp,send-otp,verify-otp,generate-backup-codes,verify-backup-code}` |
 | Magic link | `POST /sign-in/magic-link`, `GET /magic-link/verify` |
@@ -297,7 +299,7 @@ Errors are returned as `{"code": "USER_ALREADY_EXISTS", "message": "..."}` with 
 
 ## Configuration reference
 
-`godevauth.Config` mirrors better-auth's options: `EmailAndPassword` (min/max length, verification requirements, reset delivery, custom `PasswordHasher`), `EmailVerification`, `Session` (`ExpiresIn`, `UpdateAge`, `FreshAge`, cookie cache), `User` (additional fields, change-email, delete-user), `Account` (linking rules, token encryption at rest), `Advanced` (cookie prefix, cross-subdomain cookies, SameSite, proxy trust, custom ID generation, CSRF exemptions), `TrustedOrigins`, `RateLimit` (windows, per-path rules, pluggable store), `Events` (the audit hook), `PreviousSecrets` (secret rotation), `Hooks` and `DatabaseHooks`.
+`godevauth.Config` mirrors better-auth's options: `EmailAndPassword` (min/max length, verification requirements, reset delivery, custom `PasswordHasher`), `EmailVerification` (delivery, required-before-sign-in, optional interstitial `ConfirmationPage` so email scanners cannot consume the link), `Session` (`ExpiresIn`, `UpdateAge`, `FreshAge`, cookie cache), `User` (additional fields, change-email — approval goes to the *current* verified address, then the new address is verified before the switch — delete-user), `Account` (linking rules, token encryption at rest), `Advanced` (cookie prefix, cross-subdomain cookies, SameSite, proxy trust, custom ID generation, CSRF exemptions), `TrustedOrigins`, `RateLimit` (windows, per-path rules, pluggable store), `Events` (the audit hook), `PreviousSecrets` (secret rotation), `Hooks` and `DatabaseHooks`.
 
 Rate-limit rules in `RateLimit.CustomRules` may be keyed by the route pattern (`"/reset-password/:token"`) as well as by a literal path. Buckets are keyed by the pattern, so a parameterised route is limited as one endpoint rather than one bucket per parameter value.
 
@@ -340,7 +342,7 @@ Fields contributed by plugins (`role`, `banned`, `twoFactorEnabled`, …) are ne
 
 **Sign-in guards.** Every sign-in path — password, magic link, social, verification auto-login — funnels through `SignInUser`, so a plugin implementing `SignInGuard` (two-factor, bans) cannot be bypassed by choosing another method. `SessionGuard` additionally re-checks every request, so a ban takes effect immediately rather than at next login.
 
-**ID tokens.** The native "sign in with X" path verifies the token's signature against the issuer's published JWKS and checks `iss`, `aud` (plus `azp` for multi-audience tokens), `exp` and the nonce. Keys are cached with a bounded stale-serve window, and a failed fetch cannot be induced by a client to block key rotation.
+**ID tokens.** The native "sign in with X" path verifies the token's signature against the issuer's published JWKS and checks `iss`, `aud` (plus `azp` for multi-audience tokens), `exp` and the nonce — the client mints a single-use nonce at `POST /id-token/nonce`, passes it to the provider SDK, and the signed token must echo it, so a token captured elsewhere cannot be replayed here (`Advanced.DisableIDTokenNonceCheck` restores the old behaviour for SDKs that cannot set one). Keys are cached with a bounded stale-serve window, and a failed fetch cannot be induced by a client to block key rotation.
 
 **Secrets at rest.** TOTP secrets, backup codes and JWT private keys are AES-256-GCM encrypted with a key derived from your `Secret`; OAuth tokens too when `Account.EncryptOAuthTokens` is set. Encryption failure is an error, never a silent plaintext write, and **decryption failure is an error too** — never a fallback that returns the ciphertext. Every ciphertext is **bound to where it is stored** — its model, record id and field name are authenticated alongside the value — so a value copied from one encrypted column into another does not decrypt, and database write access cannot be turned into a read oracle for somebody else's secrets. Ciphertexts also carry a key identifier, so `Secret` can be rotated: see [Rotating the secret](#rotating-the-secret).
 
@@ -435,7 +437,7 @@ Plugins emit their own with `auth.EmitEvent(c, godevauth.Event{...})`.
 
 ## Migrations
 
-Plugins do not only add tables. They add **columns to the tables you already have**: `admin` adds `role`, `banned`, `banReason` and `banExpires` to `user` and `impersonatedBy` to `session`, `twofactor` adds `twoFactorEnabled` to `user`, `organization` adds `activeOrganizationId` to `session`, and `Config.User.AdditionalFields` does the same. A library upgrade can add a core column the same way.
+Plugins do not only add tables (`passkey` and `sso` each bring one). They also add **columns to the tables you already have**: `admin` adds `role`, `banned`, `banReason` and `banExpires` to `user` and `impersonatedBy` to `session`, `twofactor` adds `twoFactorEnabled` to `user`, `organization` adds `activeOrganizationId` to `session`, and `Config.User.AdditionalFields` does the same. A library upgrade can add a core column the same way.
 
 `CREATE TABLE IF NOT EXISTS` does nothing for a table that is already there, so a column-level step is not optional on a database that has data in it. `store.Migrate(ctx)` does both:
 
