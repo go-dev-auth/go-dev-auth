@@ -20,8 +20,8 @@ jobs:
         # not silently require a newer toolchain than it declares.
         go: ['1.22', 'stable']
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ matrix.go }}
           check-latest: true
@@ -37,13 +37,13 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           # Lint gates regressions while this repository pays down legacy
           # warnings; compare against the previous commit so unchanged
           # baseline issues do not fail unrelated pull requests.
           fetch-depth: 2
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           # Pinned below stable: golangci-lint v2.12.2's embedded
           # typechecker cannot parse the Go 1.27 stdlib (generic methods
@@ -76,8 +76,8 @@ jobs:
     # shows the coverage rather than asserting it.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with: { go-version: stable }
       - name: List fuzz targets
         run: make fuzz-list
@@ -92,8 +92,8 @@ jobs:
     name: conformance (SQLite)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with: { go-version: stable }
       - name: SQL adapter and full auth flow against real SQLite
         env:
@@ -136,8 +136,8 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with: { go-version: stable }
       - name: Conformance suite, migrations and auth flow on PostgreSQL
         env:
@@ -160,8 +160,8 @@ jobs:
           --health-timeout 5s
           --health-retries 20
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with: { go-version: stable }
       - name: Conformance suite, migrations and auth flow on MySQL
         # root, because the tests create and drop a throwaway database
