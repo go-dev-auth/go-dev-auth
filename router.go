@@ -30,6 +30,14 @@ type Route struct {
 	Handler func(c *Ctx) error
 	// RateLimit overrides the default rate limit rule for this path.
 	RateLimit *ratelimit.Rule
+	// SkipOriginCheck exempts this route from the CSRF origin check.
+	// Reserve it for endpoints that are legitimately driven cross-site
+	// by a third party AND authenticate the request some other way —
+	// the OAuth callback (state cookie + PKCE) is the canonical case,
+	// where form_post providers like Apple deliver the callback as a
+	// cross-site POST that no origin policy can allow. A route that
+	// relies on the session cookie alone must never set this.
+	SkipOriginCheck bool
 }
 
 // coreRoutes is the built-in endpoint table: every URL this library
@@ -61,7 +69,13 @@ func (a *Auth) coreRoutes() []Route {
 
 		// social
 		{Method: http.MethodPost, Path: "/sign-in/social", Handler: a.handleSignInSocial, RateLimit: moderate},
-		{Method: "*", Path: "/callback/:provider", Handler: a.handleOAuthCallback},
+		{Method: http.MethodPost, Path: "/id-token/nonce", Handler: a.handleIDTokenNonce, RateLimit: moderate},
+		// The callback is driven by the provider, not the application:
+		// Apple (response_mode=form_post) delivers it as a cross-site
+		// POST from appleid.apple.com, which an origin check can only
+		// reject. The flow is protected by the single-use state (bound
+		// to this browser via the state cookie) and PKCE instead.
+		{Method: "*", Path: "/callback/:provider", Handler: a.handleOAuthCallback, SkipOriginCheck: true},
 		{Method: http.MethodPost, Path: "/link-social", Handler: a.handleLinkSocial},
 		{Method: http.MethodPost, Path: "/unlink-account", Handler: a.handleUnlinkAccount},
 		{Method: http.MethodGet, Path: "/list-accounts", Handler: a.handleListAccounts},
@@ -101,6 +115,10 @@ func (a *Auth) coreRoutes() []Route {
 	}
 	routes = append(routes,
 		Route{Method: http.MethodGet, Path: "/verify-email", Handler: a.handleVerifyEmail},
+		// POST performs the verification when ConfirmationPage is on, so
+		// the token is consumed by a human submitting a form, not by a
+		// scanner firing the GET link.
+		Route{Method: http.MethodPost, Path: "/verify-email", Handler: a.handleVerifyEmailPost},
 	)
 
 	if a.config.User.ChangeEmail.Enabled {
@@ -178,10 +196,14 @@ func (a *Auth) serveHTTP(w http.ResponseWriter, r *http.Request) {
 
 	c := &Ctx{W: w, R: r, Auth: a, Path: rel, Params: params, pattern: route.Path}
 
-	// CSRF / origin check
-	if err := a.checkOrigin(r, rel); err != nil {
-		_ = c.Error(err)
-		return
+	// CSRF / origin check. Routes that opt out (SkipOriginCheck) are
+	// driven cross-site by design and authenticate the request some
+	// other way.
+	if !route.SkipOriginCheck {
+		if err := a.checkOrigin(r, rel, route.Path); err != nil {
+			_ = c.Error(err)
+			return
+		}
 	}
 
 	// rate limiting

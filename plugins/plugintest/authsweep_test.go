@@ -61,7 +61,9 @@ var publicRoutes = map[string]string{
 	"POST /reset-password":          "single-use reset token is the credential",
 	"GET /reset-password/:token":    "redirects the emailed link to the reset page",
 	"GET /verify-email":             "single-use verification token is the credential",
+	"POST /verify-email":            "single-use verification token is the credential (confirmation-page target)",
 	"POST /send-verification-email": "answers uniformly; sends only to an unverified, existing address",
+	"POST /id-token/nonce":          "mints a single-use nonce for native ID-token sign-in; no credential needed",
 	"GET /delete-user/callback":     "renders a confirmation page for an emailed single-use token",
 	"POST /delete-user/callback":    "consumes a single-use deletion token bound to one user",
 

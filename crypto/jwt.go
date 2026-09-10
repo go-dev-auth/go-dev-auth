@@ -103,6 +103,15 @@ func SignJWT(key any, kid string, claims Claims) (string, error) {
 // keys: ed25519.PublicKey, *rsa.PublicKey, *ecdsa.PublicKey, []byte/string
 // (HMAC). Expiry (exp) and not-before (nbf) are enforced.
 func VerifyJWT(key any, token string) (Claims, error) {
+	return VerifyJWTWithLeeway(key, token, 0)
+}
+
+// VerifyJWTWithLeeway is VerifyJWT tolerating clock skew of leeway on
+// the exp and nbf checks. OIDC verification passes the configured
+// IDTokenConfig.Leeway here; without it the config field was dead for
+// exp, because this check rejected with zero tolerance before the
+// caller's leeway-aware check ever ran.
+func VerifyJWTWithLeeway(key any, token string, leeway time.Duration) (Claims, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return nil, ErrInvalidToken
@@ -162,14 +171,63 @@ func VerifyJWT(key any, token string) (Claims, error) {
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now().Unix()
-	if exp, ok := claimInt(claims, "exp"); ok && now >= exp {
-		return nil, ErrTokenExpired
+	now := time.Now()
+	if v, present := claims["exp"]; present {
+		exp, ok := numericClaimTime(v)
+		if !ok {
+			// A malformed exp (a string, an object) must not read as
+			// "no expiry": that turns a provider quirk or an attacker's
+			// type confusion into an eternal token.
+			return nil, ErrInvalidToken
+		}
+		if !now.Before(exp.Add(leeway)) {
+			return nil, ErrTokenExpired
+		}
 	}
-	if nbf, ok := claimInt(claims, "nbf"); ok && now < nbf {
-		return nil, ErrInvalidToken
+	if v, present := claims["nbf"]; present {
+		nbf, ok := numericClaimTime(v)
+		if !ok {
+			return nil, ErrInvalidToken
+		}
+		if now.Add(leeway).Before(nbf) {
+			return nil, ErrInvalidToken
+		}
 	}
 	return claims, nil
+}
+
+// numericClaimTime interprets a JWT NumericDate claim value. A present
+// but non-numeric value returns ok=false and must be treated as
+// malformed, never as absent.
+func numericClaimTime(v any) (time.Time, bool) {
+	switch t := v.(type) {
+	case float64:
+		return time.Unix(int64(t), 0), true
+	case int64:
+		return time.Unix(t, 0), true
+	case json.Number:
+		n, err := t.Int64()
+		return time.Unix(n, 0), err == nil
+	}
+	return time.Time{}, false
+}
+
+// DecodeJWTHeader decodes the header of a JWT without verifying it, so a
+// caller can select the verifying key by its kid before verification.
+func DecodeJWTHeader(token string) (JWTHeader, error) {
+	parts := strings.Split(token, ".")
+	if len(parts) < 2 {
+		return JWTHeader{}, ErrInvalidToken
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return JWTHeader{}, ErrInvalidToken
+	}
+	var header JWTHeader
+	if err := json.Unmarshal(raw, &header); err != nil {
+		return JWTHeader{}, ErrInvalidToken
+	}
+	return header, nil
 }
 
 // DecodeJWTClaims decodes the payload of a JWT without verifying it.
@@ -243,10 +301,20 @@ func PublicJWK(kid string, pub any) (JWK, error) {
 	return JWK{}, fmt.Errorf("crypto: unsupported public key %T", pub)
 }
 
-// PublicKey converts a JWK back into a crypto public key.
+// PublicKey converts a JWK back into a crypto public key. Keys marked
+// for a use other than signing are refused, and the curve is checked
+// against what the parser assumes: interpreting P-384 coordinates on
+// P-256 would otherwise produce a garbage key that still "verifies"
+// whatever happens to match it.
 func (j JWK) PublicKey() (any, error) {
+	if j.Use != "" && j.Use != "sig" {
+		return nil, ErrInvalidToken
+	}
 	switch j.Kty {
 	case "OKP":
+		if j.Crv != "" && j.Crv != "Ed25519" {
+			return nil, ErrInvalidToken
+		}
 		x, err := base64.RawURLEncoding.DecodeString(j.X)
 		if err != nil || len(x) != ed25519.PublicKeySize {
 			return nil, ErrInvalidToken
@@ -263,6 +331,9 @@ func (j JWK) PublicKey() (any, error) {
 		}
 		return &rsa.PublicKey{N: new(big.Int).SetBytes(n), E: int(new(big.Int).SetBytes(e).Int64())}, nil
 	case "EC":
+		if j.Crv != "P-256" {
+			return nil, ErrInvalidToken
+		}
 		x, err := base64.RawURLEncoding.DecodeString(j.X)
 		if err != nil {
 			return nil, ErrInvalidToken
@@ -271,7 +342,11 @@ func (j JWK) PublicKey() (any, error) {
 		if err != nil {
 			return nil, ErrInvalidToken
 		}
-		return &ecdsa.PublicKey{Curve: elliptic.P256(), X: new(big.Int).SetBytes(x), Y: new(big.Int).SetBytes(y)}, nil
+		pub := &ecdsa.PublicKey{Curve: elliptic.P256(), X: new(big.Int).SetBytes(x), Y: new(big.Int).SetBytes(y)}
+		if !pub.Curve.IsOnCurve(pub.X, pub.Y) {
+			return nil, ErrInvalidToken
+		}
+		return pub, nil
 	}
 	return nil, fmt.Errorf("crypto: unsupported jwk kty %q", j.Kty)
 }

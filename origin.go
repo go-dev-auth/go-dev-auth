@@ -84,8 +84,11 @@ func isSameSiteRequest(r *http.Request) (known bool, sameSite bool) {
 }
 
 // checkOrigin blocks state-changing cookie-authenticated requests from
-// untrusted origins.
-func (a *Auth) checkOrigin(r *http.Request, path string) error {
+// untrusted origins. path is the resolved request path, pattern the
+// matched route pattern (e.g. "/callback/:provider"); exemptions in
+// Advanced.DisableOriginCheckForPaths match either, so parameterised
+// routes can be exempted by their pattern.
+func (a *Auth) checkOrigin(r *http.Request, path, pattern string) error {
 	if a.config.Advanced.DisableCSRFCheck {
 		return nil
 	}
@@ -93,7 +96,7 @@ func (a *Auth) checkOrigin(r *http.Request, path string) error {
 		return nil
 	}
 	for _, p := range a.config.Advanced.DisableOriginCheckForPaths {
-		if p == path {
+		if p == path || (pattern != "" && p == pattern) {
 			return nil
 		}
 	}

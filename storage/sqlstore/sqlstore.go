@@ -15,6 +15,22 @@
 // one fails. Supply a schema only when using the adapter standalone,
 // without godevauth.New.
 //
+// # Foreign keys and cascading deletes
+//
+// Schema foreign keys carry ON DELETE CASCADE so rows owned by a
+// deleted user (plugin tables included) go with them. Two engines need
+// a word of care. SQLite ships with foreign-key enforcement OFF per
+// connection: open the database with the pragma enabled or the
+// cascades silently do nothing —
+//
+//	sql.Open("sqlite3", "file:auth.db?_fk=1")            // mattn/go-sqlite3
+//	sql.Open("sqlite", "file:auth.db?_pragma=foreign_keys(1)") // modernc.org/sqlite
+//
+// MySQL discards column-inline REFERENCES clauses, so the MySQL dialect
+// emits table-level FOREIGN KEY constraints instead; tables created by
+// versions that predate this fix have no enforced constraints — run
+// PendingMigrationSQL or recreate the tables to pick them up.
+//
 // # Migrations
 //
 // Migrate is idempotent and does two things: it creates missing tables
@@ -337,13 +353,25 @@ func (a *Adapter) buildWhere(t *storage.Table, where []storage.Where, startIdx i
 		col := a.dialect.Quote(w.Field)
 		switch op {
 		case storage.OpEq:
-			expr = col + " = " + a.dialect.Placeholder(idx)
-			args = append(args, a.encode(f, w.Value))
-			idx++
+			// "col = NULL" is never true in SQL, so a nil equality has to
+			// become "col IS NULL" or it silently matches nothing — while
+			// the memory and Mongo adapters do match nil == nil, so the
+			// three adapters would disagree.
+			if w.Value == nil {
+				expr = col + " IS NULL"
+			} else {
+				expr = col + " = " + a.dialect.Placeholder(idx)
+				args = append(args, a.encode(f, w.Value))
+				idx++
+			}
 		case storage.OpNe:
-			expr = col + " <> " + a.dialect.Placeholder(idx)
-			args = append(args, a.encode(f, w.Value))
-			idx++
+			if w.Value == nil {
+				expr = col + " IS NOT NULL"
+			} else {
+				expr = col + " <> " + a.dialect.Placeholder(idx)
+				args = append(args, a.encode(f, w.Value))
+				idx++
+			}
 		case storage.OpGt, storage.OpGte, storage.OpLt, storage.OpLte:
 			sym := map[storage.Operator]string{
 				storage.OpGt: ">", storage.OpGte: ">=", storage.OpLt: "<", storage.OpLte: "<=",

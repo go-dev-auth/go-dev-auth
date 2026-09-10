@@ -12,9 +12,19 @@ import (
 
 // Options configures the bearer plugin.
 type Options struct {
-	// RequireSignature only accepts signed tokens (value of the session
-	// cookie) rather than raw session tokens.
+	// RequireSignature is retained for compatibility. Signed tokens are
+	// now required by default; set AllowUnsignedTokens to opt out.
+	//
+	// Deprecated: signatures are required unless AllowUnsignedTokens is
+	// set, so this field no longer changes behaviour.
 	RequireSignature bool
+	// AllowUnsignedTokens also accepts raw session tokens, not just the
+	// signed value the `set-auth-token` header advertises. Raw tokens
+	// are stored in clear in the sessions table, so accepting them
+	// turns database read access into account takeover — leave this
+	// off unless existing clients still hold raw tokens, and treat it
+	// as a migration switch. Ignored when RequireSignature is set.
+	AllowUnsignedTokens bool
 }
 
 // Plugin implements the bearer token plugin.
@@ -79,10 +89,13 @@ func (p *Plugin) toCookieValue(token string) string {
 		_ = raw
 		return token
 	}
-	if p.opts.RequireSignature {
-		return ""
+	// Signed-only is the default: raw session tokens sit in clear in
+	// the sessions table, and cookies are HMAC-bound for exactly this
+	// reason — the bearer path must not be the weaker one.
+	if p.opts.AllowUnsignedTokens && !p.opts.RequireSignature {
+		return p.auth.SignToken(token)
 	}
-	return p.auth.SignToken(token)
+	return ""
 }
 
 // tokenHeaderWriter mirrors the session cookie into a `set-auth-token`

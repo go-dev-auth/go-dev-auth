@@ -159,6 +159,15 @@ func (p *Plugin) loadInvitation(c *godevauth.Ctx, sd *godevauth.SessionData, id 
 		return nil, godevauth.NewAPIError(http.StatusForbidden, "NOT_YOUR_INVITATION",
 			"This invitation is not addressed to you")
 	}
+	// The invitation was sent to an address, so possession of that
+	// address must be proven before the invitation confers anything.
+	// Without this check, anyone who learns a pending invitation's id
+	// can sign up an unverified account under the invitee's email and
+	// take the role meant for them.
+	if !sd.User.EmailVerified {
+		return nil, godevauth.NewAPIError(http.StatusForbidden, "EMAIL_NOT_VERIFIED",
+			"Verify your email address before responding to this invitation")
+	}
 	return inv, nil
 }
 
@@ -336,7 +345,10 @@ func (p *Plugin) handleListInvitations(c *godevauth.Ctx) error {
 	if orgID == "" {
 		return godevauth.NewAPIError(http.StatusBadRequest, "NO_ACTIVE_ORGANIZATION", "No active organization")
 	}
-	if _, err := p.requireRole(c, orgID, sd); err != nil {
+	// Invitation ids are capabilities: with one, the holder can sign up
+	// an account under the invitee's address and try to redeem it. Only
+	// owners and admins get to enumerate them.
+	if _, err := p.requireRole(c, orgID, sd, RoleOwner, RoleAdmin); err != nil {
 		return err
 	}
 	recs, err := p.auth.Storage().FindMany(c.Context(), ModelInvitation,

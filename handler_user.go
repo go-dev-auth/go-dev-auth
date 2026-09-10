@@ -88,7 +88,13 @@ func (a *Auth) handleChangeEmail(c *Ctx) error {
 		if body.CallbackURL != "" {
 			approveURL = withQuery(approveURL, "callbackURL", body.CallbackURL)
 		}
-		if err := send(ctx, sd.User, newEmail, approveURL, token); err != nil {
+		if err := send(ctx, ChangeEmailVerification{
+			User:     sd.User,
+			SendTo:   sd.User.Email, // current, verified address — never newEmail
+			NewEmail: newEmail,
+			URL:      approveURL,
+			Token:    token,
+		}); err != nil {
 			return NewAPIError(http.StatusInternalServerError, "FAILED_TO_SEND_EMAIL", "Failed to send email")
 		}
 		// Moving a verified address relocates the account's recovery
@@ -158,7 +164,12 @@ func (a *Auth) handleDeleteUser(c *Ctx) error {
 			return ErrCredentialAccountNotFound
 		}
 		ok, err := a.config.EmailAndPassword.PasswordHasher.Verify(account.Password, body.Password)
-		if err != nil || !ok {
+		if err != nil {
+			// Hasher error (e.g. ErrHasherBusy) is capacity, not a wrong
+			// password; surface it as-is rather than as bad credentials.
+			return err
+		}
+		if !ok {
 			return ErrInvalidPassword
 		}
 	} else if cfg.SendDeleteAccountVerification != nil {

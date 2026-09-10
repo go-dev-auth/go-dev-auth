@@ -507,32 +507,48 @@ func (a *Adapter) Count(ctx context.Context, model string, where []storage.Where
 	return n, nil
 }
 
-// Transaction implements storage.Transactor. The whole store is locked
-// for the duration and restored if fn returns an error, giving
-// all-or-nothing semantics for a single process.
+// Transaction implements storage.Transactor with real isolation and
+// atomicity for a single process: the whole store is locked for the
+// duration, so no other operation interleaves, and fn runs against a
+// private working copy that is committed in one step only if fn
+// returns nil.
+//
+// The previous implementation released the lock before running fn and
+// rolled back by overwriting the tables with a pre-fn snapshot. That
+// discarded writes other goroutines made during fn (on rollback) and
+// let their writes interleave with fn's (on commit) — neither isolated
+// nor atomic, the opposite of what this doc promised. fn now operates
+// on a child adapter with its own lock (so fn's own method calls do not
+// deadlock against the lock held here), and commit swaps the child's
+// tables in wholesale.
 func (a *Adapter) Transaction(ctx context.Context, fn func(tx storage.Adapter) error) error {
 	a.mu.Lock()
-	snapshot := make(map[string][]map[string]any, len(a.tables))
+	defer a.mu.Unlock()
+
+	child := &Adapter{
+		tables: make(map[string][]map[string]any, len(a.tables)),
+		index:  map[string]map[string]map[any]map[string]any{},
+		schema: a.schema,
+		unique: a.unique,
+	}
 	for model, rows := range a.tables {
 		cp := make([]map[string]any, 0, len(rows))
 		for _, rec := range rows {
 			cp = append(cp, clone(rec))
 		}
-		snapshot[model] = cp
-	}
-	a.mu.Unlock()
-
-	if err := fn(a); err != nil {
-		a.mu.Lock()
-		a.tables = snapshot
-		a.index = map[string]map[string]map[any]map[string]any{}
-		for model, rows := range a.tables {
-			for _, rec := range rows {
-				a.addToIndex(model, rec)
-			}
+		child.tables[model] = cp
+		for _, rec := range cp {
+			child.addToIndex(model, rec)
 		}
-		a.mu.Unlock()
+	}
+
+	if err := fn(child); err != nil {
+		// Discard the child; a.tables is untouched, so a failed
+		// transaction leaves no trace.
 		return err
 	}
+	// Commit the child's state in one step.
+	a.tables = child.tables
+	a.index = child.index
 	return nil
 }
