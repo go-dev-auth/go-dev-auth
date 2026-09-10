@@ -9,6 +9,18 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Pre-1.0: the public API may still change. Once tagged v1, breaking
 changes will require a major version.
 
+Nothing yet.
+
+## [0.3.0] - 2026-09-10
+
+The passkey and SSO release, plus the fixes from a full security review
+pass. One breaking API change: `SendChangeEmailVerification` now takes
+a `ChangeEmailVerification` struct. Two new columns (`apikey.scopes`,
+`twoFactor.lastCounter`) are applied by `store.Migrate`. See
+UPGRADE-IMPACT notes in the release description for behavior changes
+that can affect existing clients (ID-token nonce, bearer signed tokens,
+API-key sensitive routes, TOTP replay, magic-link uniform responses).
+
 ### Added
 - **Passkey plugin (`plugins/passkey`).** WebAuthn registration and
   sign-in with no external dependency — an auditable minimal CBOR
