@@ -9,16 +9,6 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Pre-1.0: the public API may still change. Once tagged v1, breaking
 changes will require a major version.
 
-### Fixed
-- `sqlstore`: **the migration advisory lock is now session-pinned.**
-  PostgreSQL's `pg_advisory_lock` and MySQL's `GET_LOCK` are scoped to
-  a database session, but both halves were issued through the
-  connection pool — the lock could land on one connection and the
-  unlock on another, leaving the lock held by an idle pooled connection
-  and blocking every later `Migrate` (Postgres waits forever). Lock and
-  unlock now run on a single pinned `*sql.Conn` for the lock's
-  lifetime. SQLite was never affected.
-
 ### Added
 - **Passkey plugin (`plugins/passkey`).** WebAuthn registration and
   sign-in with no external dependency — an auditable minimal CBOR
@@ -40,24 +30,6 @@ changes will require a major version.
   `SecretRotator`); management endpoints fail closed until
   `Options.Authorize` is configured. Providers surface as
   `sso:<providerId>`.
-- **Real-server conformance in CI.** The `storagetest` contract,
-  migration idempotence and the full HTTP auth flow now run against
-  real PostgreSQL and MySQL servers on every push, alongside the
-  existing SQLite leg (`storage/sqlstore/integration`, driven by
-  `POSTGRES_DSN` / `MYSQL_DSN`). In CI, `REQUIRE_DSN=1` turns a missing
-  database into a failure so a leg cannot pass by silently skipping.
-  MySQL moves from "generated SQL asserted by unit tests" to
-  "CI-verified against a live server".
-- **`docs/security-model.md`** makes the threat model explicit: the
-  four attackers the design answers to, the reasoning behind each
-  decision, and a table mapping every security claim to the test that
-  pins it. `SECURITY.md` gains a direct disclosure contact.
-- **Two new runnable examples.** `examples/chi` shows the library
-  mounted in a chi router with `GetSession` as ordinary middleware;
-  `examples/fullapp` is a complete small web app — server-rendered
-  pages, protected dashboard, password reset end to end — on
-  persistent SQLite. Both are separate modules, so the core keeps zero
-  dependencies, and both are built in CI.
 
 ### Security
 - **Session sliding-refresh no longer extends short-lived sessions.**
@@ -174,7 +146,29 @@ changes will require a major version.
   unix sockets. A non-ASCII/NFKC password-hash compatibility caveat with
   better-auth is now documented.
 
-### Security (existing)
+## [0.2.0] - 2026-08-26
+
+### Added
+- **Real-server conformance in CI.** The `storagetest` contract,
+  migration idempotence and the full HTTP auth flow now run against
+  real PostgreSQL and MySQL servers on every push, alongside the
+  existing SQLite leg (`storage/sqlstore/integration`, driven by
+  `POSTGRES_DSN` / `MYSQL_DSN`). In CI, `REQUIRE_DSN=1` turns a missing
+  database into a failure so a leg cannot pass by silently skipping.
+  MySQL moves from "generated SQL asserted by unit tests" to
+  "CI-verified against a live server".
+- **`docs/security-model.md`** makes the threat model explicit: the
+  four attackers the design answers to, the reasoning behind each
+  decision, and a table mapping every security claim to the test that
+  pins it. `SECURITY.md` gains a direct disclosure contact.
+- **Two new runnable examples.** `examples/chi` shows the library
+  mounted in a chi router with `GetSession` as ordinary middleware;
+  `examples/fullapp` is a complete small web app — server-rendered
+  pages, protected dashboard, password reset end to end — on
+  persistent SQLite. Both are separate modules, so the core keeps zero
+  dependencies, and both are built in CI.
+
+### Security
 - `admin`: **free-form update maps are no longer a side door around
   validation.** `update-user` wrote its `data` map onto the user record
   with only `id` stripped, so it accepted what its siblings refused —
@@ -187,6 +181,23 @@ changes will require a major version.
   dedicated parameter wins over the same key in `data`. Admin-only, so
   not a privilege-escalation path, but an endpoint that accepts what its
   sibling refuses is a trap for anyone scripting against the API.
+
+### Fixed
+- `sqlstore`: **the migration advisory lock is now session-pinned.**
+  PostgreSQL's `pg_advisory_lock` and MySQL's `GET_LOCK` are scoped to
+  a database session, but both halves were issued through the
+  connection pool — the lock could land on one connection and the
+  unlock on another, leaving the lock held by an idle pooled connection
+  and blocking every later `Migrate` (Postgres waits forever). Lock and
+  unlock now run on a single pinned `*sql.Conn` for the lock's
+  lifetime. SQLite was never affected.
+- `storage/sqlstore/integration`: the integration test module declared
+  a Go version above the library's documented minimum; lowered to
+  go 1.22.
+
+## [0.1.3] - 2026-08-18
+
+### Security
 - `admin`: **create-user now enforces the library's own credential
   rules.** It previously validated only that the e-mail was non-empty,
   so it accepted `not-an-email` with the password `123`. With public
@@ -217,6 +228,22 @@ changes will require a major version.
   same rules. Previously these were unexported, which is why the admin
   plugin could not reuse them.
 - `admin.Options.Roles`: an optional allow-list of accepted role values.
+
+### Fixed
+- Session-revocation failures during password reset/change/set are
+  logged and recorded as failed instead of being reported as success,
+  and admin user-write handlers distinguish not-found from conflict
+  and real storage errors instead of masking everything as 404.
+
+## [0.1.2] - 2026-08-12
+
+CI only — no library code changed, so nothing a `go get` consumer
+depends on is affected.
+
+### Changed
+- CI: golangci-lint runs from a plain shell step (dropping the last
+  action pinned to the deprecated Node 20 runtime) and reports only
+  issues new since the previous commit.
 
 ## [0.1.1] - 2026-08-12
 
