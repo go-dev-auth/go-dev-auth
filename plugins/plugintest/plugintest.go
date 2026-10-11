@@ -89,6 +89,11 @@ func NewWith(t *testing.T, configure func(*godevauth.Config)) *Env {
 	return &Env{T: t, Auth: auth, Server: server, client: newClient()}
 }
 
+// HTTPClient exposes this client's underlying http.Client (cookies
+// included), for tests that must follow an external redirect — an OAuth
+// provider's consent hop — while keeping the browser identity.
+func (e *Env) HTTPClient() *http.Client { return e.client }
+
 // Client returns a second, independent client: a different browser or
 // device for the same server. Use it to test one user acting on
 // another's data, which is where authorization bugs hide.
@@ -156,6 +161,18 @@ func (e *Env) SignUp(email, password string) *storage.User {
 		e.T.Fatalf("plugintest: loading the user just created: %v", err)
 	}
 	return user
+}
+
+// MarkEmailVerified flips the stored emailVerified flag for a user, as
+// if they had completed email verification. Flows that require a
+// verified address (accepting an organization invitation, for one) can
+// arrange that precondition without wiring up email delivery.
+func (e *Env) MarkEmailVerified(userID string) {
+	e.T.Helper()
+	if _, err := e.Auth.Storage().Update(context.Background(), storage.ModelUser,
+		[]storage.Where{storage.W("id", userID)}, map[string]any{"emailVerified": true}); err != nil {
+		e.T.Fatalf("plugintest: marking user %s verified: %v", userID, err)
+	}
 }
 
 // SignIn authenticates an existing user on this client.

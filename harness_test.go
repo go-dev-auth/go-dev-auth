@@ -2,6 +2,7 @@ package godevauth_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	godevauth "github.com/go-dev-auth/go-dev-auth"
+	"github.com/go-dev-auth/go-dev-auth/storage"
 	"github.com/go-dev-auth/go-dev-auth/storage/memory"
 )
 
@@ -70,6 +72,20 @@ func newTestAuth(t *testing.T, mutate func(*godevauth.Config)) (*godevauth.Auth,
 		},
 	}
 	return auth, &testClient{t: t, server: server, client: client}
+}
+
+// markEmailVerified flips a user's stored emailVerified flag, standing
+// in for a completed verification flow.
+func markEmailVerified(t *testing.T, auth *godevauth.Auth, email string) {
+	t.Helper()
+	user, err := auth.FindUserByEmail(context.Background(), email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.Storage().Update(context.Background(), storage.ModelUser,
+		[]storage.Where{storage.W("id", user.ID)}, map[string]any{"emailVerified": true}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 type cookieJar struct {

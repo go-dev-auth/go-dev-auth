@@ -16,6 +16,7 @@ import (
 
 	godevauth "github.com/go-dev-auth/go-dev-auth"
 	"github.com/go-dev-auth/go-dev-auth/crypto"
+	"github.com/go-dev-auth/go-dev-auth/ratelimit"
 	"github.com/go-dev-auth/go-dev-auth/storage"
 )
 
@@ -201,7 +202,10 @@ func (p *Plugin) Routes() []godevauth.Route {
 		{Method: http.MethodPost, Path: "/organization/set-active", Handler: p.handleSetActive},
 		{Method: http.MethodGet, Path: "/organization/get-full-organization", Handler: p.handleGetFull},
 		{Method: http.MethodPost, Path: "/organization/check-slug", Handler: p.handleCheckSlug},
-		{Method: http.MethodPost, Path: "/organization/invite-member", Handler: p.handleInviteMember},
+		// M9: sends email on demand; strict-limited like the other
+		// mail-sending endpoints.
+		{Method: http.MethodPost, Path: "/organization/invite-member", Handler: p.handleInviteMember,
+			RateLimit: &ratelimit.Rule{Window: 10 * time.Second, Max: 3}},
 		{Method: http.MethodPost, Path: "/organization/accept-invitation", Handler: p.handleAcceptInvitation},
 		{Method: http.MethodPost, Path: "/organization/reject-invitation", Handler: p.handleRejectInvitation},
 		{Method: http.MethodPost, Path: "/organization/cancel-invitation", Handler: p.handleCancelInvitation},
@@ -630,7 +634,8 @@ func (p *Plugin) handleGetFull(c *godevauth.Ctx) error {
 	if orgID == "" {
 		return c.JSON(http.StatusOK, nil)
 	}
-	if _, err := p.Membership(ctx, orgID, sd.User.ID); err != nil {
+	viewer, err := p.Membership(ctx, orgID, sd.User.ID)
+	if err != nil {
 		return godevauth.NewAPIError(http.StatusForbidden, "NOT_A_MEMBER",
 			"You are not a member of this organization")
 	}
@@ -685,12 +690,16 @@ func (p *Plugin) handleGetFull(c *godevauth.Ctx) error {
 		}
 		members = append(members, entry)
 	}
-	invRecs, _ := p.auth.Storage().FindMany(ctx, ModelInvitation, []storage.Where{
-		storage.W("organizationId", orgID), storage.W("status", "pending"),
-	}, nil)
-	invitations := make([]*Invitation, 0, len(invRecs))
-	for _, r := range invRecs {
-		invitations = append(invitations, invitationFromMap(r))
+	// Pending invitations are capabilities (see handleListInvitations),
+	// so only owners and admins see them here.
+	invitations := make([]*Invitation, 0)
+	if viewer.Role == RoleOwner || viewer.Role == RoleAdmin {
+		invRecs, _ := p.auth.Storage().FindMany(ctx, ModelInvitation, []storage.Where{
+			storage.W("organizationId", orgID), storage.W("status", "pending"),
+		}, nil)
+		for _, r := range invRecs {
+			invitations = append(invitations, invitationFromMap(r))
+		}
 	}
 	out := map[string]any{
 		"id":          rec["id"],

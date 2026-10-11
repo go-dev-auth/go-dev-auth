@@ -128,7 +128,10 @@ func (c *Ctx) OK() error {
 func (c *Ctx) Error(err error) error {
 	apiErr := AsAPIError(err)
 	if apiErr.Status >= 500 {
-		c.Auth.logger.Error("go-dev-auth: internal error", "path", c.Path, "err", err)
+		// Log the route pattern, never the resolved path: a 5xx on
+		// /reset-password/:token would otherwise write the one-time
+		// token straight into the error log.
+		c.Auth.logger.Error("go-dev-auth: internal error", "route", c.RoutePattern(), "err", err)
 	}
 	return c.JSON(apiErr.Status, apiErr)
 }

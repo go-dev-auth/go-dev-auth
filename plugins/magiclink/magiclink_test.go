@@ -129,7 +129,10 @@ func TestEmailedTokenSignsInAndVerifiesTheAddress(t *testing.T) {
 		t.Fatal("no session after following the link")
 	}
 	user, _ := session["user"].(map[string]any)
-	if user["email"] != "magic@example.com" || user["name"] != "Magic User" {
+	// The requester's name is deliberately NOT applied to a new account
+	// (an attacker could request the link for someone else's address),
+	// so the new user starts with an empty name and sets it later.
+	if user["email"] != "magic@example.com" || user["name"] != "" {
 		t.Fatalf("session user = %v", user)
 	}
 	// Clicking the link proves control of the mailbox, so the address is
@@ -187,10 +190,12 @@ func TestUnknownAndExpiredTokensAreRejected(t *testing.T) {
 func TestDisableSignUpRejectsUnknownAddresses(t *testing.T) {
 	env, box := newEnv(t, magiclink.Options{DisableSignUp: true})
 
-	// An address with no account must be refused before any mail goes
-	// out, otherwise the endpoint is a way to register anyone.
+	// With sign-up disabled, an unknown address must NOT be able to
+	// register — but the response must be indistinguishable from the
+	// known-address case (L11), so no USER_NOT_FOUND enumeration oracle.
+	// No mail is sent and no user is created.
 	res, body := env.POST("/sign-in/magic-link", map[string]any{"email": "stranger@example.com"})
-	env.RequireErrorCode(res, body, http.StatusBadRequest, "USER_NOT_FOUND")
+	env.RequireStatus(res, body, http.StatusOK)
 	if box.count() != 0 {
 		t.Fatalf("emails sent = %d, want none", box.count())
 	}

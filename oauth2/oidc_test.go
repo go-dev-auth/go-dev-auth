@@ -244,3 +244,43 @@ func TestEd25519IDToken(t *testing.T) {
 		t.Fatal("valid Ed25519 token rejected")
 	}
 }
+
+// Regression test for L1: IDTokenConfig.Leeway must tolerate a
+// slightly-expired token; the underlying JWT check used to reject with
+// zero tolerance before the leeway-aware check ran.
+func TestVerifyIDTokenAppliesLeewayToExp(t *testing.T) {
+	p := newIDP(t)
+	cfg := p.config("client-1")
+	cfg.Leeway = time.Minute
+	claims := p.validClaims("client-1")
+	claims["exp"] = time.Now().Add(-3 * time.Second).Unix()
+	token := p.mint(t, claims)
+	if _, ok := cfg.VerifyIDToken(context.Background(), token, ""); !ok {
+		t.Fatal("token 3s past exp rejected despite 60s leeway")
+	}
+	claims["exp"] = time.Now().Add(-2 * time.Minute).Unix()
+	if _, ok := cfg.VerifyIDToken(context.Background(), p.mint(t, claims), ""); ok {
+		t.Fatal("token beyond leeway accepted")
+	}
+}
+
+// Regression test for M12's mechanism: ValidateIssuer replaces the
+// exact issuer match and can bind the issuer to other claims.
+func TestVerifyIDTokenValidateIssuerOverride(t *testing.T) {
+	p := newIDP(t)
+	cfg := p.config("client-1")
+	cfg.ValidateIssuer = func(iss string, claims crypto.Claims) bool {
+		tid, _ := claims["tid"].(string)
+		return iss == p.server.URL+"/tenant/"+tid
+	}
+	claims := p.validClaims("client-1")
+	claims["iss"] = p.server.URL + "/tenant/t-1"
+	claims["tid"] = "t-1"
+	if _, ok := cfg.VerifyIDToken(context.Background(), p.mint(t, claims), ""); !ok {
+		t.Fatal("issuer accepted by ValidateIssuer was rejected")
+	}
+	claims["tid"] = "t-2"
+	if _, ok := cfg.VerifyIDToken(context.Background(), p.mint(t, claims), ""); ok {
+		t.Fatal("issuer/tid mismatch accepted")
+	}
+}
