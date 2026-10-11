@@ -15,7 +15,7 @@ const (
 	tokenKindChangeEmail   = "change-email"
 	tokenKindDeleteAccount = "delete-account"
 	tokenKindOAuthState    = "oauth-state"
-	tokenKindIDTokenNonce  = "id-token-nonce"
+	tokenKindIDTokenNonce  = "id-token-nonce" //nolint:gosec // G101: a verification-table kind label, not a credential
 )
 
 // tokenIdentifier is the value stored in the verification table's

@@ -231,7 +231,11 @@ func (p *Plugin) setTrustedDevice(c *godevauth.Ctx, userID string) {
 	exp := time.Now().Add(p.opts.TrustDeviceDuration).Unix()
 	payload := userID + "|" + strconv.FormatInt(exp, 10)
 	value := payload + "|" + crypto.SignHMACPurpose(p.auth.Config().Secret, trustDevicePurpose, payload)
-	http.SetCookie(c.W, &http.Cookie{
+	// Secure tracks the deployment scheme rather than being hardcoded
+	// true: a Secure cookie is dropped by browsers over plain-http dev
+	// setups. The value itself is HMAC-signed, so interception cannot
+	// forge or extend a trust grant for another user.
+	http.SetCookie(c.W, &http.Cookie{ //nolint:gosec // G124: see comment above
 		Name:     p.trustCookieName(),
 		Value:    value,
 		Path:     "/",

@@ -80,12 +80,15 @@ func (d *cborDecoder) item() (any, error) {
 
 	switch major {
 	case 0: // unsigned int
-		return int64(arg), d.checkInt(arg)
+		if err := d.checkInt(arg); err != nil {
+			return nil, err
+		}
+		return int64(arg), nil //nolint:gosec // G115: checkInt caps arg at 1<<62
 	case 1: // negative int: -1 - arg
 		if err := d.checkInt(arg); err != nil {
 			return nil, err
 		}
-		return -1 - int64(arg), nil
+		return -1 - int64(arg), nil //nolint:gosec // G115: checkInt caps arg at 1<<62
 	case 2: // byte string
 		return d.take(arg)
 	case 3: // text string
@@ -181,12 +184,16 @@ func (d *cborDecoder) argument(info byte) (uint64, error) {
 }
 
 func (d *cborDecoder) take(n uint64) ([]byte, error) {
-	if n > uint64(len(d.buf)-d.pos) {
+	// n is attacker-controlled; bound it against the remaining buffer
+	// before any signed conversion so the length cannot wrap into a
+	// huge allocation or a negative slice index.
+	remaining := d.buf[d.pos:]
+	if n > uint64(len(remaining)) {
 		return nil, fmt.Errorf("%w: truncated string", errCBOR)
 	}
 	out := make([]byte, n)
-	copy(out, d.buf[d.pos:d.pos+int(n)])
-	d.pos += int(n)
+	copy(out, remaining[:n])
+	d.pos += len(out)
 	return out, nil
 }
 

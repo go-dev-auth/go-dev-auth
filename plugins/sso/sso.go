@@ -208,18 +208,7 @@ func (p *Plugin) handleRegister(c *godevauth.Ctx) error {
 	if err := c.BindJSON(&body); err != nil {
 		return err
 	}
-	cfg := ProviderConfig{
-		ProviderID:            body.ProviderID,
-		Issuer:                body.Issuer,
-		Domain:                body.Domain,
-		ClientID:              body.ClientID,
-		ClientSecret:          body.ClientSecret,
-		AuthorizationEndpoint: body.AuthorizationEndpoint,
-		TokenEndpoint:         body.TokenEndpoint,
-		JWKSEndpoint:          body.JWKSEndpoint,
-		UserInfoEndpoint:      body.UserInfoEndpoint,
-		Scopes:                body.Scopes,
-	}
+	cfg := ProviderConfig(body)
 	rec, err := p.RegisterProvider(c.Context(), cfg)
 	if err != nil {
 		return err
@@ -368,7 +357,7 @@ func (p *Plugin) discover(ctx context.Context, issuer string) (*discovery, error
 	if err != nil {
 		return nil, err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("discovery document returned %d", res.StatusCode)
 	}

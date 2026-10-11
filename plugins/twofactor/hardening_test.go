@@ -1,6 +1,7 @@
 package twofactor_test
 
 import (
+	"context"
 	"net/http"
 	"testing"
 	"time"
@@ -35,7 +36,7 @@ func TestTOTPCodeCannotBeReplayed(t *testing.T) {
 
 	// A second sign-in presenting the very same code is a replay.
 	second := challenge(t, env)
-	res, body = second.POST("/two-factor/verify-totp", map[string]any{"code": code})
+	res, _ = second.POST("/two-factor/verify-totp", map[string]any{"code": code})
 	if res.StatusCode == http.StatusOK {
 		t.Fatal("a TOTP code was accepted twice: replay protection is not working")
 	}
@@ -113,7 +114,7 @@ func TestTrustedDeviceSkipsSecondFactor(t *testing.T) {
 // reach past the API for a precondition).
 func currentSecret(t *testing.T, env *plugintest.Env) string {
 	t.Helper()
-	rec, err := env.Auth.Storage().FindOne(t.Context(), twofactor.ModelTwoFactor, nil)
+	rec, err := env.Auth.Storage().FindOne(context.Background(), twofactor.ModelTwoFactor, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

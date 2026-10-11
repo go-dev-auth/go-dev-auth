@@ -1,6 +1,7 @@
 package sso_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -161,7 +162,7 @@ func TestSSOManagementFailsClosedWithoutAuthorize(t *testing.T) {
 
 func TestSSOClientSecretIsEncryptedAtRest(t *testing.T) {
 	env, _ := newEnv(t)
-	rec, err := env.Auth.Storage().FindOne(t.Context(), sso.ModelSSOProvider,
+	rec, err := env.Auth.Storage().FindOne(context.Background(), sso.ModelSSOProvider,
 		[]storage.Where{storage.W("providerId", "acme")})
 	if err != nil {
 		t.Fatal(err)

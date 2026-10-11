@@ -1,6 +1,7 @@
 package godevauth_test
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -15,7 +16,7 @@ import (
 func TestShortLivedSessionIsNotExtendedByRefresh(t *testing.T) {
 	auth, tc := newTestAuth(t, nil)
 	tc.signUp("short@example.com", "password123", "Short")
-	user, err := auth.FindUserByEmail(t.Context(), "short@example.com")
+	user, err := auth.FindUserByEmail(context.Background(), "short@example.com")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +38,7 @@ func TestShortLivedSessionIsNotExtendedByRefresh(t *testing.T) {
 	// The bug fired on the very first lookup: updateAt was computed as
 	// ExpiresAt - config.ExpiresIn + UpdateAge, which for a 1h session
 	// is far in the past.
-	sd, err := auth.GetSessionFromToken(t.Context(), sess.Token)
+	sd, err := auth.GetSessionFromToken(context.Background(), sess.Token)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +54,7 @@ func TestShortLivedSessionIsNotExtendedByRefresh(t *testing.T) {
 func TestDefaultSessionStillRefreshes(t *testing.T) {
 	auth, tc := newTestAuth(t, nil)
 	tc.signUp("slider@example.com", "password123", "Slider")
-	user, err := auth.FindUserByEmail(t.Context(), "slider@example.com")
+	user, err := auth.FindUserByEmail(context.Background(), "slider@example.com")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,14 +72,14 @@ func TestDefaultSessionStillRefreshes(t *testing.T) {
 	// session's own lifetime is still the default.
 	expiresIn := auth.Config().Session.ExpiresIn
 	created := time.Now().UTC().Add(-48 * time.Hour)
-	if _, err := auth.UpdateSessionRecord(t.Context(), sess.Token, map[string]any{
+	if _, err := auth.UpdateSessionRecord(context.Background(), sess.Token, map[string]any{
 		"createdAt": created,
 		"expiresAt": created.Add(expiresIn),
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	sd, err := auth.GetSessionFromToken(t.Context(), sess.Token)
+	sd, err := auth.GetSessionFromToken(context.Background(), sess.Token)
 	if err != nil {
 		t.Fatal(err)
 	}

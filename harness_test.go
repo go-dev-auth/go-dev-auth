@@ -2,6 +2,7 @@ package godevauth_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -77,11 +78,11 @@ func newTestAuth(t *testing.T, mutate func(*godevauth.Config)) (*godevauth.Auth,
 // in for a completed verification flow.
 func markEmailVerified(t *testing.T, auth *godevauth.Auth, email string) {
 	t.Helper()
-	user, err := auth.FindUserByEmail(t.Context(), email)
+	user, err := auth.FindUserByEmail(context.Background(), email)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := auth.Storage().Update(t.Context(), storage.ModelUser,
+	if _, err := auth.Storage().Update(context.Background(), storage.ModelUser,
 		[]storage.Where{storage.W("id", user.ID)}, map[string]any{"emailVerified": true}); err != nil {
 		t.Fatal(err)
 	}

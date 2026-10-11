@@ -198,6 +198,9 @@ func TestChangeEmailFlow(t *testing.T) {
 
 	// Confirming the new address's own verification completes the move.
 	res, _ = tc.get("/verify-email?token=" + url.QueryEscape(verifyToken))
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("verifying the new address should succeed, got %d", res.StatusCode)
+	}
 	user, _ = auth.FindUserByID(context.Background(), userID)
 	if !user.EmailVerified {
 		t.Error("new address should be verified after confirming its own email")

@@ -343,7 +343,9 @@ func (j JWK) PublicKey() (any, error) {
 			return nil, ErrInvalidToken
 		}
 		pub := &ecdsa.PublicKey{Curve: elliptic.P256(), X: new(big.Int).SetBytes(x), Y: new(big.Int).SetBytes(y)}
-		if !pub.Curve.IsOnCurve(pub.X, pub.Y) {
+		// Reject points not on the curve (invalid-curve attack). ECDH()
+		// performs the on-curve check that the deprecated IsOnCurve did.
+		if _, err := pub.ECDH(); err != nil {
 			return nil, ErrInvalidToken
 		}
 		return pub, nil

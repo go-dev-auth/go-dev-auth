@@ -1,6 +1,7 @@
 package passkey_test
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -210,7 +211,7 @@ func TestRegisterAndListPasskey(t *testing.T) {
 	}
 	// The stored row never carries the private key, and the public key
 	// is a parseable COSE structure, not raw junk.
-	rec, err := env.Auth.Storage().FindOne(t.Context(), passkey.ModelPasskey, nil)
+	rec, err := env.Auth.Storage().FindOne(context.Background(), passkey.ModelPasskey, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,7 +313,7 @@ func TestRegistrationChallengeIsBoundToUser(t *testing.T) {
 
 func TestDeletePasskeyRequiresOwnership(t *testing.T) {
 	env, _ := newEnv(t)
-	rec, err := env.Auth.Storage().FindOne(t.Context(), passkey.ModelPasskey, nil)
+	rec, err := env.Auth.Storage().FindOne(context.Background(), passkey.ModelPasskey, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

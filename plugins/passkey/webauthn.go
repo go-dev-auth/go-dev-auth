@@ -40,7 +40,7 @@ type clientData struct {
 func parseClientData(raw []byte) (*clientData, error) {
 	var cd clientData
 	if err := json.Unmarshal(raw, &cd); err != nil {
-		return nil, fmt.Errorf("%w: clientDataJSON: %v", errWebAuthn, err)
+		return nil, fmt.Errorf("%w: clientDataJSON: %w", errWebAuthn, err)
 	}
 	return &cd, nil
 }
@@ -98,7 +98,7 @@ func parseAuthData(raw []byte) (*authData, error) {
 		// decode by prefix and validate it parses as a key later.
 		_, n, err := cborDecodePrefix(rest)
 		if err != nil {
-			return nil, fmt.Errorf("%w: credential public key: %v", errWebAuthn, err)
+			return nil, fmt.Errorf("%w: credential public key: %w", errWebAuthn, err)
 		}
 		ad.publicKey = rest[:n]
 	}
@@ -155,7 +155,9 @@ func parseCOSEKey(raw []byte) (*cosePublicKey, error) {
 			return nil, fmt.Errorf("%w: bad EC coordinates", errWebAuthn)
 		}
 		pub := &ecdsa.PublicKey{Curve: elliptic.P256(), X: new(big.Int).SetBytes(x), Y: new(big.Int).SetBytes(y)}
-		if !pub.Curve.IsOnCurve(pub.X, pub.Y) {
+		// Reject points not on the curve (invalid-curve attack). ECDH()
+		// performs the on-curve check that the deprecated IsOnCurve did.
+		if _, err := pub.ECDH(); err != nil {
 			return nil, fmt.Errorf("%w: point not on curve", errWebAuthn)
 		}
 		return &cosePublicKey{alg: alg, ec: pub}, nil

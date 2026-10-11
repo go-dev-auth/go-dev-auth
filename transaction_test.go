@@ -86,21 +86,21 @@ func TestDeleteUserCascadesPluginTables(t *testing.T) {
 		cfg.User.DeleteUser.Enabled = true
 	})
 	tc.signUp("cascade@example.com", "password123", "Cascade")
-	user, err := auth.FindUserByEmail(t.Context(), "cascade@example.com")
+	user, err := auth.FindUserByEmail(context.Background(), "cascade@example.com")
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Insert a plugin row owned by the user.
-	if _, err := auth.Storage().Create(t.Context(), "stubUserData", map[string]any{
+	if _, err := auth.Storage().Create(context.Background(), "stubUserData", map[string]any{
 		"id": "row-1", "userId": user.ID, "secret": "x",
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := auth.DeleteUserByID(t.Context(), user.ID); err != nil {
+	if err := auth.DeleteUserByID(context.Background(), user.ID); err != nil {
 		t.Fatal(err)
 	}
-	n, err := auth.Storage().Count(t.Context(), "stubUserData",
+	n, err := auth.Storage().Count(context.Background(), "stubUserData",
 		[]storage.Where{storage.W("userId", user.ID)})
 	if err != nil {
 		t.Fatal(err)
