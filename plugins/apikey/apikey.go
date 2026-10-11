@@ -9,10 +9,12 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	godevauth "github.com/go-dev-auth/go-dev-auth"
 	"github.com/go-dev-auth/go-dev-auth/crypto"
+	"github.com/go-dev-auth/go-dev-auth/ratelimit"
 	"github.com/go-dev-auth/go-dev-auth/storage"
 )
 
@@ -29,12 +31,26 @@ type Options struct {
 	DefaultKeyLength int
 	// MaximumKeysPerUser defaults to unlimited (0).
 	MaximumKeysPerUser int
-	// RateLimit configures default request budget metadata per key.
+	// RateLimitMax and RateLimitWindow cap how many requests a single
+	// API key may make per window (per process; use a shared limiter
+	// store for multi-instance). Zero RateLimitMax leaves keys
+	// unthrottled by the plugin. RateLimitWindow defaults to one minute
+	// when a max is set.
 	RateLimitMax    int
 	RateLimitWindow time.Duration
 	// DisableSessionForAPIKeys prevents API keys from resolving to a
 	// mock session (verification endpoints still work).
 	DisableSessionForAPIKeys bool
+	// AllowSensitiveRoutes lets an API-key session reach the account- and
+	// admin-critical endpoints that are denied by default (see
+	// deniedByDefault): /set-password, /delete-user, /change-password,
+	// /change-email, and everything under /admin/, /api-key/ and
+	// /two-factor/. An API key is an unattended, long-lived credential
+	// with no second factor, so by default it cannot rotate credentials,
+	// mint or revoke other keys, change 2FA, or act as an admin — even
+	// when its owner could. Turn this on only if you have scoped keys
+	// another way.
+	AllowSensitiveRoutes bool
 	// UsageWriteInterval throttles how often lastRequest/requestCount
 	// are persisted. Defaults to 1 minute; set it negative to disable
 	// usage tracking entirely and keep API-key requests read-only.
@@ -43,8 +59,9 @@ type Options struct {
 
 // Plugin implements the api key plugin.
 type Plugin struct {
-	opts Options
-	auth *godevauth.Auth
+	opts    Options
+	auth    *godevauth.Auth
+	limiter *ratelimit.Limiter
 }
 
 // New builds the plugin.
@@ -62,7 +79,14 @@ func New(opts ...Options) *Plugin {
 	if o.UsageWriteInterval == 0 {
 		o.UsageWriteInterval = time.Minute
 	}
-	return &Plugin{opts: o}
+	if o.RateLimitMax > 0 && o.RateLimitWindow <= 0 {
+		o.RateLimitWindow = time.Minute
+	}
+	p := &Plugin{opts: o}
+	if o.RateLimitMax > 0 {
+		p.limiter = ratelimit.NewLimiter(nil)
+	}
+	return p
 }
 
 // ID implements godevauth.Plugin.
@@ -90,6 +114,10 @@ func (p *Plugin) Schema(s *storage.Schema) {
 		{Name: "requestCount", Type: storage.FieldInt, Default: 0},
 		{Name: "remaining", Type: storage.FieldInt},
 		{Name: "metadata", Type: storage.FieldText},
+		// scopes, when set, restricts the key to request paths (relative
+		// to BasePath) matching one of these prefixes, on top of the
+		// always-enforced sensitive-route denial. Stored space-separated.
+		{Name: "scopes", Type: storage.FieldText},
 		{Name: "createdAt", Type: storage.FieldTime, Required: true},
 		{Name: "updatedAt", Type: storage.FieldTime, Required: true},
 	}})
@@ -122,21 +150,81 @@ func (p *Plugin) BeforeRequest(c *godevauth.Ctx) error {
 		return nil
 	}
 	id, _ := rec["id"].(string)
+	// An API key must not reach the account- and admin-critical
+	// endpoints unless the deployment explicitly allows it, and a scoped
+	// key is confined to its scopes. Failing this check leaves the
+	// request unauthenticated, so the endpoint answers 401 rather than
+	// acting on the key.
+	if !p.keyPermitsPath(rec, c.Path) {
+		return nil
+	}
+	// Per-key request budget (Options.RateLimitMax). Keyed by the key's
+	// id, so one key's traffic cannot exhaust another's allowance.
+	if p.limiter != nil {
+		ok, err := p.limiter.Allow("apikey:"+id, ratelimit.Rule{
+			Window: p.opts.RateLimitWindow, Max: p.opts.RateLimitMax,
+		})
+		if err == nil && !ok {
+			return godevauth.ErrRateLimited
+		}
+	}
 	now := time.Now().UTC()
 	p.recordUsage(c.Context(), id, rec, now)
 	c.SetSession(&godevauth.SessionData{
 		User: user,
 		Session: &storage.Session{
-			ID:        "apikey:" + id,
-			UserID:    user.ID,
-			Token:     "",
+			ID:     "apikey:" + id,
+			UserID: user.ID,
+			Token:  "",
+			// CreatedAt is deliberately the zero time, not now: an API
+			// key is a long-lived unattended credential, so its session
+			// must never count as "fresh". Otherwise a key would satisfy
+			// the freshness gate on the very endpoints it is least
+			// entitled to (set-password, delete-user).
 			ExpiresAt: now.Add(time.Minute),
-			CreatedAt: now,
 			UpdatedAt: now,
 		},
 	})
 	return nil
 }
+
+// deniedByDefault are the auth endpoints an API key cannot reach unless
+// Options.AllowSensitiveRoutes is set: credential and identity changes,
+// key management, two-factor management, and admin actions.
+var deniedByDefault = []string{
+	"/set-password", "/delete-user", "/change-password", "/change-email",
+}
+
+var deniedPrefixes = []string{"/admin/", "/api-key/", "/two-factor/"}
+
+// keyPermitsPath reports whether a key may drive a request to path
+// (relative to BasePath).
+func (p *Plugin) keyPermitsPath(rec map[string]any, path string) bool {
+	if !p.opts.AllowSensitiveRoutes {
+		for _, d := range deniedByDefault {
+			if path == d {
+				return false
+			}
+		}
+		for _, pre := range deniedPrefixes {
+			if strings.HasPrefix(path, pre) {
+				return false
+			}
+		}
+	}
+	scopes := strings.Fields(str(rec["scopes"]))
+	if len(scopes) == 0 {
+		return true
+	}
+	for _, sc := range scopes {
+		if path == sc || strings.HasPrefix(path, sc) {
+			return true
+		}
+	}
+	return false
+}
+
+func str(v any) string { s, _ := v.(string); return s }
 
 // AfterRequest implements godevauth.HookPlugin.
 func (p *Plugin) AfterRequest(c *godevauth.Ctx) error { return nil }
@@ -250,6 +338,7 @@ type createBody struct {
 	Prefix    string         `json:"prefix"`
 	Remaining *int64         `json:"remaining"`
 	Metadata  map[string]any `json:"metadata"`
+	Scopes    []string       `json:"scopes"`
 }
 
 func (p *Plugin) handleCreate(c *godevauth.Ctx) error {
@@ -298,6 +387,9 @@ func (p *Plugin) handleCreate(c *godevauth.Ctx) error {
 	}
 	if body.Metadata != nil {
 		rec["metadata"] = jsonString(body.Metadata)
+	}
+	if len(body.Scopes) > 0 {
+		rec["scopes"] = strings.Join(body.Scopes, " ")
 	}
 	if _, err := p.auth.Storage().Create(ctx, ModelAPIKey, rec); err != nil {
 		return err
@@ -415,7 +507,14 @@ func (p *Plugin) handleVerify(c *godevauth.Ctx) error {
 	if err != nil || rec == nil {
 		return c.JSON(http.StatusOK, map[string]any{"valid": false})
 	}
-	return c.JSON(http.StatusOK, map[string]any{"valid": true, "key": publicKeyView(rec)})
+	// L12: this endpoint is intentionally open (a downstream service
+	// checks a key it was handed), so it must not hand back the key's
+	// metadata — application-private data such as plan or tenant that
+	// the owner never meant a verifier to read. Restrict the route at
+	// the network layer if even the returned userId is too much.
+	view := publicKeyView(rec)
+	delete(view, "metadata")
+	return c.JSON(http.StatusOK, map[string]any{"valid": true, "key": view})
 }
 
 func publicKeyView(rec map[string]any) map[string]any {

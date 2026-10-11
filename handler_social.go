@@ -59,6 +59,19 @@ func (a *Auth) handleSignInSocial(c *Ctx) error {
 			return NewAPIError(http.StatusBadRequest, "ID_TOKEN_NOT_SUPPORTED",
 				"Provider does not support id_token verification")
 		}
+		// The nonce must be one this server minted (single-use, from
+		// /id-token/nonce) and it must appear inside the signed token.
+		// Comparing the token's nonce to a client-echoed copy proved
+		// nothing — a replayer copies both together — so a leaked ID
+		// token was a bearer credential until exp.
+		if body.IDToken.Nonce == "" {
+			if !a.config.Advanced.DisableIDTokenNonceCheck {
+				return NewAPIError(http.StatusBadRequest, "NONCE_REQUIRED",
+					"Obtain a nonce from /id-token/nonce and include it in the provider sign-in request")
+			}
+		} else if _, err := a.ConsumeToken(c.Context(), tokenKindIDTokenNonce, body.IDToken.Nonce); err != nil {
+			return ErrInvalidToken
+		}
 		profile, valid := verifier.VerifyIDToken(c.Context(), body.IDToken.Token, body.IDToken.Nonce)
 		if !valid {
 			return ErrInvalidToken
@@ -104,6 +117,19 @@ func (a *Auth) handleSignInSocial(c *Ctx) error {
 	return c.JSON(http.StatusOK, map[string]any{"url": authURL, "redirect": true})
 }
 
+// handleIDTokenNonce mints a single-use nonce for the native ID-token
+// sign-in flow: the client passes it to the provider SDK, the provider
+// embeds it in the ID token it issues, and /sign-in/social consumes it.
+// A token replayed later, or minted without asking this server first,
+// is refused.
+func (a *Auth) handleIDTokenNonce(c *Ctx) error {
+	nonce, err := a.StoreToken(c.Context(), tokenKindIDTokenNonce, "1", 10*time.Minute)
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusOK, map[string]any{"nonce": nonce})
+}
+
 // startOAuthFlow mints the state, binds it to this browser with a
 // cookie and builds the provider authorization URL.
 func (a *Auth) startOAuthFlow(c *Ctx, provider oauth2.Provider, st oauthState, loginHint string) (string, string, error) {
@@ -116,7 +142,11 @@ func (a *Auth) startOAuthFlow(c *Ctx, provider oauth2.Provider, st oauthState, l
 	// unforgeable: without it an attacker can complete their own
 	// authorization and hand the resulting callback URL to a victim,
 	// silently signing the victim into the attacker's account.
-	a.setOAuthStateCookie(c.W, state)
+	crossSitePost := false
+	if cs, ok := provider.(oauth2.CrossSiteCallbackProvider); ok {
+		crossSitePost = cs.CallbackIsCrossSite()
+	}
+	a.setOAuthStateCookie(c.W, state, crossSitePost)
 
 	authURL, err := provider.AuthorizationURL(oauth2.AuthorizeRequest{
 		State:        state,
@@ -129,6 +159,37 @@ func (a *Auth) startOAuthFlow(c *Ctx, provider oauth2.Provider, st oauthState, l
 		return "", "", err
 	}
 	return state, authURL, nil
+}
+
+// OAuthFlowOptions parameterises StartOAuthFlow. Callback URLs are
+// validated against the trusted-origin policy when the callback fires,
+// exactly as for /sign-in/social.
+type OAuthFlowOptions struct {
+	CallbackURL        string
+	NewUserCallbackURL string
+	ErrorCallbackURL   string
+	Scopes             []string
+	RequestSignUp      bool
+	LoginHint          string
+}
+
+// StartOAuthFlow begins an authorization flow for provider on behalf of
+// a plugin (SSO, custom sign-in surfaces): it mints the single-use
+// state, binds it to this browser with the state cookie, applies PKCE,
+// and returns the authorization URL to send the user to. The provider
+// must be resolvable by Auth.SocialProvider under the same id when the
+// callback arrives — configured, or contributed by the plugin's own
+// ProviderSourcePlugin implementation.
+func (a *Auth) StartOAuthFlow(c *Ctx, provider oauth2.Provider, opts OAuthFlowOptions) (string, error) {
+	_, authURL, err := a.startOAuthFlow(c, provider, oauthState{
+		Provider:           provider.ID(),
+		CallbackURL:        opts.CallbackURL,
+		NewUserCallbackURL: opts.NewUserCallbackURL,
+		ErrorCallbackURL:   opts.ErrorCallbackURL,
+		RequestSignUp:      opts.RequestSignUp,
+		Scopes:             opts.Scopes,
+	}, opts.LoginHint)
+	return authURL, err
 }
 
 // CallbackURL returns the redirect URI to register with a provider's
@@ -240,7 +301,7 @@ func (a *Auth) handleOAuthCallback(c *Ctx) error {
 		if err != nil || sd == nil || sd.User.ID != st.LinkUserID {
 			return errorRedirect(st, "session_mismatch")
 		}
-		if err := a.linkOAuthAccount(c.Context(), sd.User, providerID, profile, tokens); err != nil {
+		if err := a.linkOAuthAccount(c.Context(), a.store, sd.User, providerID, profile, tokens); err != nil {
 			var apiErr *APIError
 			if errors.As(err, &apiErr) {
 				a.EmitEvent(c, Event{
@@ -336,7 +397,17 @@ func (a *Auth) resolveOAuthUser(ctx context.Context, providerID string, profile 
 				return nil, false, NewAPIError(http.StatusUnauthorized, "ACCOUNT_NOT_LINKED",
 					"Account not linked. Sign in with your original method, then link this provider from your account settings.")
 			}
-			if err := a.linkOAuthAccount(ctx, existing, providerID, profile, tokens); err != nil {
+			// The local account must have proven the address too.
+			// Without this, an attacker pre-registers the victim's
+			// email with a password (no verification required by
+			// default) and waits; the victim's first Google sign-in
+			// then lands inside the attacker's account, password
+			// access and all.
+			if !existing.EmailVerified {
+				return nil, false, NewAPIError(http.StatusUnauthorized, "ACCOUNT_NOT_LINKED",
+					"Account not linked. Sign in with your original method, verify your email, then link this provider from your account settings.")
+			}
+			if err := a.linkOAuthAccount(ctx, a.store, existing, providerID, profile, tokens); err != nil {
 				return nil, false, err
 			}
 			return existing, false, nil
@@ -360,22 +431,31 @@ func (a *Auth) resolveOAuthUser(ctx context.Context, providerID string, profile 
 			"The provider did not return an email address for this account")
 	}
 
-	// new user
-	user, err := a.store.CreateUser(ctx, &storage.User{
-		Name:          profile.Name,
-		Email:         profile.Email,
-		EmailVerified: profile.EmailVerified,
-		Image:         profile.Image,
-	})
-	if err != nil {
+	// New user: the user row and its provider account must land
+	// together, or a failure after the first leaves an address taken by
+	// a user with no way in.
+	var user *storage.User
+	if err := a.store.transaction(ctx, func(tx *store) error {
+		u, err := tx.CreateUser(ctx, &storage.User{
+			Name:          profile.Name,
+			Email:         profile.Email,
+			EmailVerified: profile.EmailVerified,
+			Image:         profile.Image,
+		})
+		if err != nil {
+			return err
+		}
+		if err := a.linkOAuthAccount(ctx, tx, u, providerID, profile, tokens); err != nil {
+			return err
+		}
+		user = u
+		return nil
+	}); err != nil {
 		if isUniqueViolation(err) {
 			// lost a race with a concurrent sign-up for this address
 			return nil, false, NewAPIError(http.StatusUnauthorized, "ACCOUNT_NOT_LINKED",
 				"Account not linked. Sign in with your original method.")
 		}
-		return nil, false, err
-	}
-	if err := a.linkOAuthAccount(ctx, user, providerID, profile, tokens); err != nil {
 		return nil, false, err
 	}
 	return user, true, nil
@@ -415,7 +495,11 @@ func (a *Auth) tokenUpdate(accountID string, tokens *oauth2.Tokens) (map[string]
 		update["refreshTokenExpiresAt"] = tokens.RefreshTokenExpiresAt
 	}
 	if tokens.IDToken != "" {
-		update["idToken"] = tokens.IDToken
+		enc, err := a.maybeEncrypt(accountBinding(accountID, "idToken"), tokens.IDToken)
+		if err != nil {
+			return nil, err
+		}
+		update["idToken"] = enc
 	}
 	if tokens.Scope != "" {
 		update["scope"] = tokens.Scope
@@ -433,13 +517,13 @@ func (a *Auth) tokenUpdate(accountID string, tokens *oauth2.Tokens) (map[string]
 // each pass a "does it exist yet?" check and then both insert — the
 // database, which now carries the composite unique constraint, is the
 // arbiter, so exactly one row can ever exist for an external identity.
-func (a *Auth) linkOAuthAccount(ctx context.Context, user *storage.User, providerID string, profile *oauth2.UserProfile, tokens *oauth2.Tokens) error {
+func (a *Auth) linkOAuthAccount(ctx context.Context, st *store, user *storage.User, providerID string, profile *oauth2.UserProfile, tokens *oauth2.Tokens) error {
 	linking := a.config.Account.AccountLinking
 
 	if linking.Disabled {
 		// Linking is off, so a provider identity may only be attached
 		// to the user it just created.
-		if accounts, err := a.store.ListUserAccounts(ctx, user.ID); err == nil && len(accounts) > 0 {
+		if accounts, err := st.ListUserAccounts(ctx, user.ID); err == nil && len(accounts) > 0 {
 			return NewAPIError(http.StatusForbidden, "ACCOUNT_LINKING_DISABLED",
 				"Account linking is disabled")
 		}
@@ -453,7 +537,7 @@ func (a *Auth) linkOAuthAccount(ctx context.Context, user *storage.User, provide
 	// exist before the tokens are sealed. Generate it here rather than
 	// letting CreateAccount do it, and hand the same value to both.
 	acc := &storage.Account{
-		ID:         a.store.generateID(storage.ModelAccount),
+		ID:         st.generateID(storage.ModelAccount),
 		UserID:     user.ID,
 		AccountID:  profile.ID,
 		ProviderID: providerID,
@@ -467,21 +551,25 @@ func (a *Auth) linkOAuthAccount(ctx context.Context, user *storage.User, provide
 		if err != nil {
 			return err
 		}
+		idTok, err := a.maybeEncrypt(accountBinding(acc.ID, "idToken"), tokens.IDToken)
+		if err != nil {
+			return err
+		}
 		acc.AccessToken = access
 		acc.RefreshToken = refresh
-		acc.IDToken = tokens.IDToken
+		acc.IDToken = idTok
 		acc.AccessTokenExpiresAt = tokens.AccessTokenExpiresAt
 		acc.RefreshTokenExpiresAt = tokens.RefreshTokenExpiresAt
 		acc.Scope = tokens.Scope
 	}
-	if _, err := a.store.CreateAccount(ctx, acc); err != nil {
+	if _, err := st.CreateAccount(ctx, acc); err != nil {
 		if !isUniqueViolation(err) {
 			return err
 		}
 		// The database refused a second row for this external identity.
 		// Load the row that won and reconcile: linking to the same user is
 		// idempotent, linking to a different one is a conflict.
-		existing, ferr := a.store.FindAccount(ctx, providerID, profile.ID)
+		existing, ferr := st.FindAccount(ctx, providerID, profile.ID)
 		if ferr != nil {
 			// The conflict was not on (providerId, accountId) after all
 			// (e.g. a generated-id collision); report the original error.

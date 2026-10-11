@@ -3,6 +3,7 @@ package godevauth
 import (
 	"net/http"
 
+	"github.com/go-dev-auth/go-dev-auth/oauth2"
 	"github.com/go-dev-auth/go-dev-auth/storage"
 )
 
@@ -26,6 +27,19 @@ type SchemaPlugin interface {
 	Plugin
 	// Schema may add tables and fields.
 	Schema(s *storage.Schema)
+}
+
+// ProviderSourcePlugin is implemented by plugins that contribute OAuth
+// providers resolved at request time — tenant SSO configured in the
+// database is the canonical case. Auth.SocialProvider consults sources
+// after the statically configured providers, so a source can never
+// shadow a configured provider; a source should namespace its ids (the
+// sso plugin uses "sso:<providerId>") so a configured provider can
+// never shadow it either.
+type ProviderSourcePlugin interface {
+	Plugin
+	// SocialProvider returns the provider with the given id, or nil.
+	SocialProvider(id string) oauth2.Provider
 }
 
 // MiddlewarePlugin is implemented by plugins that wrap every auth

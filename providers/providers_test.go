@@ -1,10 +1,19 @@
 package providers_test
 
 import (
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
 
+	"github.com/go-dev-auth/go-dev-auth/crypto"
 	"github.com/go-dev-auth/go-dev-auth/oauth2"
 	"github.com/go-dev-auth/go-dev-auth/providers"
 )
@@ -307,5 +316,117 @@ func TestMicrosoftTenantIsScoped(t *testing.T) {
 	}
 	if !strings.Contains(p.Spec.IDToken.Issuer, "contoso.onmicrosoft.com") {
 		t.Errorf("issuer is not tenant-scoped: %q", p.Spec.IDToken.Issuer)
+	}
+}
+
+// Regression test for M12: Microsoft's multi-tenant aliases never
+// appear in a real token's iss (which carries the tenant GUID), so the
+// exact-match config made the ID-token path fail closed on every token.
+func TestMicrosoftMultiTenantIssuer(t *testing.T) {
+	p, ok := providers.Microsoft(providers.Credentials{ClientID: "c"}).(*oauth2.StdProvider)
+	if !ok || p.Spec.IDToken == nil {
+		t.Fatal("Microsoft provider has no ID token config")
+	}
+	vi := p.Spec.IDToken.ValidateIssuer
+	if vi == nil {
+		t.Fatal("common tenant has no ValidateIssuer: real tokens can never match the alias issuer")
+	}
+	const tid = "9188040d-6c67-4c5b-b112-36a304b66dad"
+	good := "https://login.microsoftonline.com/" + tid + "/v2.0"
+	if !vi(good, crypto.Claims{"tid": tid}) {
+		t.Fatalf("real-shaped issuer %q rejected", good)
+	}
+	for name, tc := range map[string]struct {
+		iss string
+		tid string
+	}{
+		"alias issuer": {"https://login.microsoftonline.com/common/v2.0", tid},
+		"tid mismatch": {good, "00000000-0000-0000-0000-000000000000"},
+		"missing tid":  {good, ""},
+		"wrong host":   {"https://evil.example.com/" + tid + "/v2.0", tid},
+		"not a guid":   {"https://login.microsoftonline.com/evil/v2.0", "evil"},
+	} {
+		claims := crypto.Claims{}
+		if tc.tid != "" {
+			claims["tid"] = tc.tid
+		}
+		if vi(tc.iss, claims) {
+			t.Errorf("%s: issuer %q accepted", name, tc.iss)
+		}
+	}
+
+	// A concrete tenant keeps the exact match.
+	pt := providers.MicrosoftTenant(providers.Credentials{ClientID: "c"}, tid).(*oauth2.StdProvider)
+	if pt.Spec.IDToken.ValidateIssuer != nil {
+		t.Fatal("concrete tenant should pin the issuer exactly")
+	}
+}
+
+// Regression test for the Apple dead-config: with TeamID/KeyID/
+// PrivateKey set, the provider generates a valid ES256 client-secret
+// JWT per exchange (previously the doc promised this but no signing
+// path existed).
+func TestAppleGeneratesClientSecret(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
+
+	var gotSecret string
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		gotSecret = r.Form.Get("client_secret")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"a","token_type":"bearer","id_token":""}`))
+	}))
+	defer idp.Close()
+
+	p := providers.Apple(providers.AppleConfig{
+		ClientID: "com.example.app", TeamID: "TEAM123456", KeyID: "KEY1234567",
+		PrivateKey: string(pemBytes),
+	}).(*oauth2.StdProvider)
+	// Point the token endpoint at the test server.
+	p.Spec.Endpoints.TokenURL = idp.URL + "/token"
+
+	if _, err := p.Exchange(context.Background(), "code", "verifier", "https://app/callback"); err != nil {
+		t.Fatalf("exchange: %v", err)
+	}
+	if gotSecret == "" || strings.Count(gotSecret, ".") != 2 {
+		t.Fatalf("client_secret is not a JWT: %q", gotSecret)
+	}
+	// It verifies against the public key and carries Apple's claims.
+	claims, err := crypto.VerifyJWT(&key.PublicKey, gotSecret)
+	if err != nil {
+		t.Fatalf("generated client secret does not verify: %v", err)
+	}
+	if claims["iss"] != "TEAM123456" || claims["sub"] != "com.example.app" || claims["aud"] != "https://appleid.apple.com" {
+		t.Fatalf("client secret claims = %v", claims)
+	}
+}
+
+// The Spec.RedirectURI override (previously dead) is now used in the
+// authorization URL.
+func TestSpecRedirectURIOverride(t *testing.T) {
+	p := oauth2.New(oauth2.Spec{
+		ProviderID: "x", ClientID: "c",
+		Endpoints:   oauth2.Endpoints{AuthorizationURL: "https://idp/authorize"},
+		RedirectURI: "https://custom/callback",
+	})
+	authURL, err := p.AuthorizationURL(oauth2.AuthorizeRequest{
+		RedirectURI: "https://default/callback", State: "s",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(authURL, url.QueryEscape("https://custom/callback")) {
+		t.Fatalf("auth URL did not use Spec.RedirectURI: %q", authURL)
+	}
+	if strings.Contains(authURL, url.QueryEscape("https://default/callback")) {
+		t.Fatalf("auth URL used the fallback despite Spec.RedirectURI: %q", authURL)
 	}
 }

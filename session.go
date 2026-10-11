@@ -83,6 +83,39 @@ func (a *Auth) createSession(c *Ctx, user *storage.User, rememberMe bool, extra 
 	return a.createSessionWithDuration(c, user, rememberMe, extra, a.config.Session.ExpiresIn)
 }
 
+// RunSignInGuardsAfter runs the sign-in guards for plugins ordered
+// after afterPluginID, so a plugin that took over a sign-in (a
+// two-factor challenge) can hand control to any guards that would have
+// run after it, instead of minting the session directly and skipping
+// them. handled=true means a later guard wrote its own response (a
+// chained factor), so the caller must not create a session.
+//
+// It deliberately runs only the guards *after* afterPluginID: re-running
+// the whole chain would re-trigger the very guard that is completing.
+func (a *Auth) RunSignInGuardsAfter(c *Ctx, user *storage.User, afterPluginID string) (handled bool, err error) {
+	seen := false
+	for _, p := range a.config.Plugins {
+		if !seen {
+			if p.ID() == afterPluginID {
+				seen = true
+			}
+			continue
+		}
+		guard, ok := p.(SignInGuard)
+		if !ok {
+			continue
+		}
+		done, err := guard.BeforeSignIn(c, user)
+		if err != nil {
+			return false, err
+		}
+		if done {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (a *Auth) createSessionWithDuration(c *Ctx, user *storage.User, rememberMe bool, extra map[string]any, duration time.Duration) (*storage.Session, error) {
 	if duration <= 0 {
 		duration = a.config.Session.ExpiresIn
@@ -215,7 +248,15 @@ func (a *Auth) GetSessionFromToken(ctx context.Context, token string) (*SessionD
 		return nil, err
 	}
 	// sliding expiration
-	if !a.config.Session.DisableSessionRefresh {
+	//
+	// Refresh is gated on the session's own lifetime, not just the
+	// configured default. A session minted with a custom, shorter
+	// duration (admin impersonation, a plugin's short-lived session) is
+	// a deliberate security boundary: computing "overdue" as if it had
+	// the default lifetime would extend a 1-hour session to the full
+	// Session.ExpiresIn on its first lookup. Short-lived sessions are
+	// therefore fixed-expiry and never refreshed.
+	if !a.config.Session.DisableSessionRefresh && a.sessionRefreshable(sess) {
 		updateAt := sess.ExpiresAt.Add(-a.config.Session.ExpiresIn).Add(a.config.Session.UpdateAge)
 		if now.After(updateAt) {
 			updated, err := a.store.UpdateSession(ctx, token, map[string]any{
@@ -234,6 +275,24 @@ func (a *Auth) GetSessionFromToken(ctx context.Context, token string) (*SessionD
 		return nil, err
 	}
 	return sd, nil
+}
+
+// sessionRefreshable reports whether sliding expiration applies to
+// sess. Sessions created with a lifetime shorter than the configured
+// Session.ExpiresIn keep their original expiry.
+//
+// After a refresh ExpiresAt is now+ExpiresIn, so a default-lifetime
+// session keeps qualifying; a shorter one can never start.
+func (a *Auth) sessionRefreshable(sess *storage.Session) bool {
+	if sess.CreatedAt.IsZero() {
+		return false
+	}
+	lifetime := sess.ExpiresAt.Sub(sess.CreatedAt)
+	// CreatedAt is stamped by the storage adapter a moment after the
+	// handler computed ExpiresAt, so an exactly-default session can come
+	// out a few milliseconds short of ExpiresIn. One second of tolerance
+	// absorbs that without letting a deliberately shorter session slide.
+	return lifetime >= a.config.Session.ExpiresIn-time.Second
 }
 
 // CheckSessionGuards applies the registered session guards to a
@@ -261,6 +320,13 @@ func (a *Auth) IsFresh(sess *storage.Session) bool {
 // RevokeSession revokes a session by token.
 func (a *Auth) RevokeSession(ctx context.Context, token string) error {
 	return a.store.DeleteSessionByToken(ctx, token)
+}
+
+// RevokeSessionByID revokes a session by its id. Session listings omit
+// the raw token, so this is how a listed session (another device) is
+// revoked.
+func (a *Auth) RevokeSessionByID(ctx context.Context, id string) error {
+	return a.store.DeleteSessionByID(ctx, id)
 }
 
 // RevokeUserSessions revokes all sessions of a user.

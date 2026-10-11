@@ -462,3 +462,73 @@ func TestCreateUserDataMapIsNotASideDoor(t *testing.T) {
 		t.Fatalf("role = %#v", created["role"])
 	}
 }
+
+// Regression test for M14: an impersonated session must not be able to
+// use admin powers, even when the impersonated user is an admin —
+// otherwise admin actions taken while impersonating are attributed to
+// the target and the real actor vanishes from the audit trail.
+func TestImpersonatedSessionCannotActAsAdmin(t *testing.T) {
+	env, _ := newEnv(t)
+
+	// A second admin to impersonate (allowed only via the opt-in).
+	second := env.Client()
+	su := second.SignUp("admin2@example.com", "password123")
+	if _, err := env.Auth.UpdateUserRecord(context.Background(), su.ID,
+		map[string]any{"role": "admin"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// By default, impersonating another admin is refused outright.
+	res, body := env.POST("/admin/impersonate-user", map[string]any{"userId": su.ID})
+	env.RequireErrorCode(res, body, http.StatusForbidden, "CANNOT_IMPERSONATE_ADMIN")
+
+	// Impersonate an ordinary user instead, then try an admin action
+	// through that session.
+	victim := env.Client()
+	vu := victim.SignUp("victim@example.com", "password123")
+
+	imp := env.Client()
+	iu := imp.SignUp("imp-admin@example.com", "password123")
+	if _, err := env.Auth.UpdateUserRecord(context.Background(), iu.ID,
+		map[string]any{"role": "admin"}); err != nil {
+		t.Fatal(err)
+	}
+	res, body = imp.POST("/admin/impersonate-user", map[string]any{"userId": vu.ID})
+	env.RequireStatus(res, body, http.StatusOK)
+
+	// The impersonating client now holds the victim's (non-admin)
+	// session, so admin routes are refused — but even if the victim
+	// were an admin, the impersonated marker alone blocks it.
+	res, body = imp.GET("/admin/list-users")
+	if res.StatusCode == http.StatusOK {
+		t.Fatalf("admin route reachable from an impersonated session: %v", body)
+	}
+}
+
+// Companion: an impersonated *admin* session (allowed via opt-in) still
+// cannot use admin powers — the containment does not depend on the
+// impersonated user's role.
+func TestImpersonatedAdminSessionStillCannotActAsAdmin(t *testing.T) {
+	plugin := admin.New(admin.Options{AllowImpersonatingAdmins: true})
+	env := plugintest.New(t, plugin)
+	root := env.SignUp("root@example.com", "password123")
+	if _, err := env.Auth.UpdateUserRecord(context.Background(), root.ID,
+		map[string]any{"role": "admin"}); err != nil {
+		t.Fatal(err)
+	}
+
+	other := env.Client()
+	ou := other.SignUp("other-admin@example.com", "password123")
+	if _, err := env.Auth.UpdateUserRecord(context.Background(), ou.ID,
+		map[string]any{"role": "admin"}); err != nil {
+		t.Fatal(err)
+	}
+
+	res, body := env.POST("/admin/impersonate-user", map[string]any{"userId": ou.ID})
+	env.RequireStatus(res, body, http.StatusOK)
+
+	// env now holds the impersonated admin session. Admin actions must
+	// still be refused with the impersonation-specific error.
+	res, body = env.GET("/admin/list-users")
+	env.RequireErrorCode(res, body, http.StatusForbidden, "NOT_ALLOWED_WHILE_IMPERSONATING")
+}

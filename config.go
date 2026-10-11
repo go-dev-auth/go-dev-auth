@@ -190,6 +190,14 @@ type EmailVerificationConfig struct {
 	ExpiresIn time.Duration
 	// OnEmailVerification runs after an email is verified.
 	OnEmailVerification func(ctx context.Context, user *storage.User) error
+	// ConfirmationPage makes GET /verify-email render an interstitial
+	// confirmation page instead of verifying immediately; the token is
+	// consumed only when the user submits the form (a POST). Turn it on
+	// to stop mail-security scanners and link prefetchers — which fire
+	// GETs — from consuming the one-time token before the user clicks.
+	// It is off by default because it adds a click and existing
+	// integrations link straight to the GET endpoint.
+	ConfirmationPage bool
 }
 
 // SessionConfig mirrors better-auth's session options.
@@ -283,12 +291,33 @@ type UserConfig struct {
 	DeleteUser DeleteUserConfig
 }
 
+// ChangeEmailVerification carries everything the change-email approval
+// callback needs. SendTo is called out explicitly because getting it
+// wrong is a takeover: the approval link must go to the current,
+// already-verified address (SendTo), never to NewEmail. Emailing the
+// link to NewEmail would let anyone holding a stolen session relocate
+// the account to an address they control.
+type ChangeEmailVerification struct {
+	// User is the account whose address is changing.
+	User *storage.User
+	// SendTo is the address the approval link MUST be delivered to: the
+	// current, verified address. It is always equal to User.Email.
+	SendTo string
+	// NewEmail is the address the user asked to switch to. Show it to
+	// the user for context; it is NOT where the link goes.
+	NewEmail string
+	// URL is the approval link, and Token the raw token inside it.
+	URL   string
+	Token string
+}
+
 // ChangeEmailConfig controls the change email flow.
 type ChangeEmailConfig struct {
 	Enabled bool
-	// SendChangeEmailVerification is called with the current email to
-	// approve a change when the current email is verified.
-	SendChangeEmailVerification func(ctx context.Context, user *storage.User, newEmail, url, token string) error
+	// SendChangeEmailVerification delivers the approval link for a
+	// change of a verified address. Send req.URL to req.SendTo (the
+	// current, verified address) — see ChangeEmailVerification.
+	SendChangeEmailVerification func(ctx context.Context, req ChangeEmailVerification) error
 }
 
 // DeleteUserConfig controls user deletion.
@@ -371,6 +400,13 @@ type AdvancedConfig struct {
 	IPAddressHeaders []string
 	// GenerateID overrides ID generation for database records.
 	GenerateID func(model string) string
+	// DisableIDTokenNonceCheck restores the pre-fix native ID-token
+	// sign-in that required no server-minted nonce. With it set, a
+	// leaked or stolen provider ID token for this client is a working
+	// sign-in credential until it expires — leave this off and have
+	// clients fetch a nonce from /id-token/nonce instead; it exists
+	// only to stage migrations of existing native apps.
+	DisableIDTokenNonceCheck bool
 	// DisableOriginCheckForPaths lists paths exempt from CSRF checks.
 	DisableOriginCheckForPaths []string
 	// DisableAutoMigrate stops New from creating tables and indexes,
@@ -548,6 +584,10 @@ func (c *Config) validate() error {
 	if c.BaseURL == "" {
 		return errors.New("go-dev-auth: Config.BaseURL is required (it determines cookie security, trusted origins and redirect targets)")
 	}
+	// A trailing slash would produce "//api/auth/..." in every OAuth
+	// redirect_uri and verification link, which providers reject and
+	// which breaks link matching.
+	c.BaseURL = strings.TrimRight(c.BaseURL, "/")
 	u, err := url.Parse(c.BaseURL)
 	if err != nil || u.Scheme == "" || u.Host == "" {
 		return fmt.Errorf("go-dev-auth: Config.BaseURL %q is not an absolute URL", c.BaseURL)
@@ -638,11 +678,19 @@ func parseTrustedProxies(entries []string) (*trustedProxySet, error) {
 
 // contains reports whether ip is one of the configured proxies.
 func (s *trustedProxySet) contains(ip net.IP) bool {
-	if s == nil || ip == nil {
+	if s == nil {
 		return false
 	}
+	// "*" trusts every peer, including one with no parseable address: a
+	// front proxy connected over a unix socket has an empty RemoteAddr,
+	// and requiring the wildcard to still refuse it made proxy trust
+	// dead behind unix sockets. A specific CIDR list still cannot match
+	// a nil IP.
 	if s.all {
 		return true
+	}
+	if ip == nil {
+		return false
 	}
 	for _, n := range s.nets {
 		if n.Contains(ip) {

@@ -6,9 +6,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 )
 
-var defaultHTTPClient = http.DefaultClient
+// defaultHTTPClient bounds profile-enrichment calls (e.g. fetching
+// GitHub's email list) when the Spec supplies no client of its own;
+// http.DefaultClient would wait on a hung provider forever.
+var defaultHTTPClient = &http.Client{Timeout: 15 * time.Second}
 
 // getJSONList performs an authenticated GET returning a JSON array.
 func getJSONList(ctx context.Context, client *http.Client, url, accessToken string) ([]any, error) {

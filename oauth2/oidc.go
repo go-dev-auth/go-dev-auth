@@ -70,19 +70,29 @@ func (c *JWKSCache) minRefresh() time.Duration {
 // it is missing or stale.
 func (c *JWKSCache) Key(ctx context.Context, kid string) (any, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	fresh := time.Since(c.fetchedAt) < c.ttl()
 	if key, ok := c.keys[kid]; ok && fresh {
+		c.mu.Unlock()
 		return key, nil
 	}
 	// Unknown kid or stale set: refetch, rate limited.
 	if time.Since(c.lastAttempt) < c.minRefresh() {
-		if key, ok := c.keys[kid]; ok && c.withinGrace() {
+		key, ok := c.keys[kid]
+		grace := c.withinGrace()
+		c.mu.Unlock()
+		if ok && grace {
 			return key, nil
 		}
 		return nil, fmt.Errorf("oauth2: unknown key id %q (refresh rate limited)", kid)
 	}
+	// Claim the refresh slot before releasing the lock: concurrent
+	// callers land in the rate-limited branch above (grace-serving
+	// known keys) instead of stampeding the provider, and the network
+	// fetch below runs without the mutex — holding it across the fetch
+	// used to stall every verification, including ones whose key was
+	// sitting in the cache, behind one slow JWKS endpoint.
+	c.lastAttempt = time.Now()
+	c.mu.Unlock()
 
 	// The fetch runs on its own bounded context, not the caller's.
 	// Deriving it from the request would let a client that disconnects
@@ -93,13 +103,10 @@ func (c *JWKSCache) Key(ctx context.Context, kid string) (any, error) {
 	fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.fetchTimeout())
 	defer cancel()
 	keys, err := c.fetch(fetchCtx)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if err != nil {
-		// Only a completed attempt starts the cooldown, so a failure
-		// caused by the provider being briefly unreachable does not
-		// hand an attacker a lever.
-		if !errors.Is(err, context.Canceled) {
-			c.lastAttempt = time.Now()
-		}
 		if key, ok := c.keys[kid]; ok && c.withinGrace() {
 			// Serve a known key through a short outage rather than
 			// failing every sign-in on one bad response.
@@ -107,7 +114,6 @@ func (c *JWKSCache) Key(ctx context.Context, kid string) (any, error) {
 		}
 		return nil, err
 	}
-	c.lastAttempt = time.Now()
 	c.keys = keys
 	c.fetchedAt = time.Now()
 	key, ok := keys[kid]
@@ -187,6 +193,13 @@ type IDTokenConfig struct {
 	// Leeway tolerates clock skew when checking exp/iat. Defaults to
 	// 60 seconds.
 	Leeway time.Duration
+	// ValidateIssuer overrides the exact Issuer match, for providers
+	// whose issuer is only known per token — Microsoft multi-tenant
+	// apps, where "iss" carries the signing tenant's id, are the
+	// canonical case. It must validate the issuer's shape AND bind it
+	// to the token's own claims; returning true for any https URL
+	// would accept tokens from anyone.
+	ValidateIssuer func(iss string, claims crypto.Claims) bool
 	// RequireNonce rejects verification attempts made without a nonce.
 	// Set it for flows where the server issued the nonce and can bind
 	// the token to this login; leave it off for a token obtained from
@@ -235,11 +248,16 @@ func (cfg *IDTokenConfig) verify(ctx context.Context, idToken, nonce string) (*U
 	// VerifyJWT pins the algorithm to the key type, so a token cannot
 	// downgrade itself to "none" or to HMAC using the public key as the
 	// shared secret.
-	claims, err := crypto.VerifyJWT(key, idToken)
+	claims, err := crypto.VerifyJWTWithLeeway(key, idToken, cfg.leeway())
 	if err != nil {
 		return nil, err
 	}
-	if iss, _ := claims["iss"].(string); iss != cfg.Issuer {
+	iss, _ := claims["iss"].(string)
+	if cfg.ValidateIssuer != nil {
+		if iss == "" || !cfg.ValidateIssuer(iss, claims) {
+			return nil, fmt.Errorf("oauth2: id token issuer %q rejected", iss)
+		}
+	} else if iss != cfg.Issuer {
 		return nil, fmt.Errorf("oauth2: id token issuer %q does not match %q", iss, cfg.Issuer)
 	}
 	multiAud, ok := audienceMatches(claims["aud"], cfg.Audience)

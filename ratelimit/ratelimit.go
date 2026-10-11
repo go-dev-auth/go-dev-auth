@@ -32,6 +32,12 @@ type MemoryStore struct {
 type windowState struct {
 	start time.Time
 	count int
+	// window is the rule window this state was created under. GC
+	// evicts each key relative to its OWN window: judging every key by
+	// the calling hit's window let a 10-second-window hit evict live
+	// counters for long-window rules, silently capping any custom rule
+	// longer than ~10x the shortest window in use.
+	window time.Duration
 }
 
 // NewMemoryStore returns an empty MemoryStore.
@@ -46,7 +52,7 @@ func (m *MemoryStore) Hit(key string, window time.Duration) (int, error) {
 	defer m.mu.Unlock()
 	if now.Sub(m.lastGC) > time.Minute {
 		for k, w := range m.windows {
-			if now.Sub(w.start) > 10*window {
+			if now.Sub(w.start) > 10*w.window {
 				delete(m.windows, k)
 			}
 		}
@@ -54,7 +60,7 @@ func (m *MemoryStore) Hit(key string, window time.Duration) (int, error) {
 	}
 	w, ok := m.windows[key]
 	if !ok || now.Sub(w.start) >= window {
-		m.windows[key] = &windowState{start: now, count: 1}
+		m.windows[key] = &windowState{start: now, count: 1, window: window}
 		return 1, nil
 	}
 	w.count++

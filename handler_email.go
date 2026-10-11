@@ -55,27 +55,36 @@ func (a *Auth) handleSignUpEmail(c *Ctx) error {
 	if err != nil {
 		return err
 	}
-	user, err := a.store.CreateUser(ctx, &storage.User{
-		Name:  body.Name,
-		Email: body.Email,
-		Image: body.Image,
-		Extra: extra,
-	})
-	if err != nil {
-		// The existence check above is inherently racy; the unique
-		// index is the real arbiter. Report the loser of the race as a
-		// duplicate rather than a server error.
+	// Sign-up is two writes — the user and its credential account — and
+	// they must land together. Without a transaction a failure after
+	// the first left the address taken by a user with no way to sign
+	// in. Report the loser of the racy existence check (the unique
+	// index is the real arbiter) as a duplicate rather than a 5xx.
+	var user *storage.User
+	if err := a.store.transaction(ctx, func(tx *store) error {
+		u, err := tx.CreateUser(ctx, &storage.User{
+			Name:  body.Name,
+			Email: body.Email,
+			Image: body.Image,
+			Extra: extra,
+		})
+		if err != nil {
+			return err
+		}
+		if _, err := tx.CreateAccount(ctx, &storage.Account{
+			UserID:     u.ID,
+			AccountID:  u.ID,
+			ProviderID: "credential",
+			Password:   hash,
+		}); err != nil {
+			return err
+		}
+		user = u
+		return nil
+	}); err != nil {
 		if errors.Is(err, storage.ErrUniqueViolation) {
 			return ErrUserAlreadyExists
 		}
-		return err
-	}
-	if _, err := a.store.CreateAccount(ctx, &storage.Account{
-		UserID:     user.ID,
-		AccountID:  user.ID,
-		ProviderID: "credential",
-		Password:   hash,
-	}); err != nil {
 		return err
 	}
 	a.EmitEvent(c, Event{
@@ -258,7 +267,10 @@ func (a *Auth) handleForgetPassword(c *Ctx) error {
 	ctx := c.Context()
 	user, err := a.store.FindUserByEmail(ctx, body.Email)
 	if err != nil {
-		// do not leak account existence
+		// Do not leak account existence, in the response body or in the
+		// response time: match the token write the known-account path
+		// does below.
+		a.dummyTokenWrite(ctx)
 		return c.OK()
 	}
 	token, err := a.StoreToken(ctx, tokenKindResetPassword, user.ID,
@@ -421,7 +433,14 @@ func (a *Auth) handleChangePassword(c *Ctx) error {
 		return ErrCredentialAccountNotFound
 	}
 	ok, err := a.config.EmailAndPassword.PasswordHasher.Verify(account.Password, body.CurrentPassword)
-	if err != nil || !ok {
+	if err != nil {
+		// A hasher error (a saturated hasher, ErrHasherBusy) is a
+		// capacity problem, not a wrong password: reporting it as one
+		// tells the user their password is wrong and invites a retry
+		// storm that deepens the saturation.
+		return err
+	}
+	if !ok {
 		a.EmitEvent(c, Event{
 			Type:      EventPasswordChanged,
 			Outcome:   OutcomeFailure,

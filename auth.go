@@ -300,11 +300,20 @@ func (a *Auth) Routes() []Route {
 //	mux.Handle("/api/auth/", auth.Handler())
 func (a *Auth) Handler() http.Handler { return a.handler }
 
-// SocialProvider returns the configured provider with the given id.
+// SocialProvider returns the provider with the given id: a configured
+// one, or one contributed by a ProviderSourcePlugin (tenant SSO).
+// Configured providers win, so a dynamic source can never shadow one.
 func (a *Auth) SocialProvider(id string) oauth2.Provider {
 	for _, p := range a.config.SocialProviders {
 		if p.ID() == id {
 			return p
+		}
+	}
+	for _, pl := range a.config.Plugins {
+		if src, ok := pl.(ProviderSourcePlugin); ok {
+			if p := src.SocialProvider(id); p != nil {
+				return p
+			}
 		}
 	}
 	return nil

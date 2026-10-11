@@ -12,6 +12,7 @@ import (
 
 	godevauth "github.com/go-dev-auth/go-dev-auth"
 	"github.com/go-dev-auth/go-dev-auth/crypto"
+	"github.com/go-dev-auth/go-dev-auth/ratelimit"
 	"github.com/go-dev-auth/go-dev-auth/storage"
 )
 
@@ -64,9 +65,14 @@ func (p *Plugin) Init(a *godevauth.Auth) error {
 
 // Routes implements godevauth.Plugin.
 func (p *Plugin) Routes() []godevauth.Route {
+	// M9: both endpoints are attacker-facing oracles — one sends email
+	// on demand, the other consumes guessable tokens — so they carry
+	// the same strict limit as /sign-in/email rather than the global
+	// default (which allowed ~600 emails/minute/IP).
+	strict := &ratelimit.Rule{Window: 10 * time.Second, Max: 3}
 	return []godevauth.Route{
-		{Method: http.MethodPost, Path: "/sign-in/magic-link", Handler: p.handleSignIn},
-		{Method: http.MethodGet, Path: "/magic-link/verify", Handler: p.handleVerify},
+		{Method: http.MethodPost, Path: "/sign-in/magic-link", Handler: p.handleSignIn, RateLimit: strict},
+		{Method: http.MethodGet, Path: "/magic-link/verify", Handler: p.handleVerify, RateLimit: strict},
 	}
 }
 
@@ -100,13 +106,17 @@ func (p *Plugin) handleSignIn(c *godevauth.Ctx) error {
 	ctx := c.Context()
 	if p.opts.DisableSignUp {
 		if _, err := p.auth.FindUserByEmail(ctx, body.Email); err != nil {
-			return godevauth.ErrUserNotFound
+			// Returning USER_NOT_FOUND here told an attacker which
+			// addresses are registered. Answer exactly as the success
+			// path does, and do comparable work, so the response neither
+			// says nor times the difference. No link is sent.
+			p.auth.DummyTokenWrite(ctx)
+			return c.JSON(http.StatusOK, map[string]any{"status": true})
 		}
 	}
 	token := crypto.GenerateToken(24)
 	payload, err := json.Marshal(linkPayload{
 		Email:              body.Email,
-		Name:               body.Name,
 		CallbackURL:        body.CallbackURL,
 		NewUserCallbackURL: body.NewUserCallbackURL,
 		ErrorCallbackURL:   body.ErrorCallbackURL,
@@ -170,7 +180,10 @@ func (p *Plugin) handleVerify(c *godevauth.Ctx) error {
 			return fail(&payload)
 		}
 		user, err = p.auth.CreateUser(ctx, &storage.User{
-			Name:          payload.Name,
+			// The link is proof of address control, not of the name the
+			// requester typed — an attacker could have requested the link
+			// for this address. The user sets their name after signing in.
+			Name:          "",
 			Email:         payload.Email,
 			EmailVerified: true,
 		})

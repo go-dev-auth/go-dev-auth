@@ -260,3 +260,18 @@ func TestRateLimitSeparatesClientsBehindATrustedProxy(t *testing.T) {
 		t.Fatal("a second client shared the first client's bucket")
 	}
 }
+
+// Regression test for L20: with TrustedProxies "*", a front proxy on a
+// unix socket (empty RemoteAddr) must still be trusted, so its
+// forwarded header is honoured. The nil-IP guard used to reject it even
+// for the wildcard.
+func TestClientIPTrustsWildcardOverUnixSocket(t *testing.T) {
+	cfg := godevauth.AdvancedConfig{
+		TrustProxyHeaders: true, TrustedProxies: []string{"*"},
+	}
+	got := clientIPFor(t, cfg, "", // unix socket: no RemoteAddr
+		map[string]string{"X-Forwarded-For": "203.0.113.9"})
+	if got != "203.0.113.9" {
+		t.Fatalf("ClientIP = %q, want the forwarded client (wildcard should trust a unix-socket peer)", got)
+	}
+}
