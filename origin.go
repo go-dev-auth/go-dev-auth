@@ -35,11 +35,15 @@ func (a *Auth) isTrustedOrigin(origin string) bool {
 	}
 	for _, trusted := range a.config.TrustedOrigins {
 		trusted = strings.TrimSuffix(trusted, "/")
-		if sameOrigin(origin, trusted) {
-			return true
+
+		if !strings.Contains(trusted, "*") {
+			if sameOrigin(origin, trusted) {
+				return true
+			}
+			continue
 		}
 		// wildcard subdomain match: https://*.example.com or *.example.com
-		if strings.Contains(trusted, "*") {
+		{
 			pattern := trusted
 			scheme := ""
 			if i := strings.Index(pattern, "://"); i >= 0 {
