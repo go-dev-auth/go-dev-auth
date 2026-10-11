@@ -310,6 +310,12 @@ func FuzzIsTrustedOrigin(f *testing.F) {
 		"http://sub.schemeless.example.com", "null", "app.example.com",
 		"https://app.example.com:443", "//app.example.com",
 		"https://app.example.com\\@evil.com",
+		// The pattern text itself sent as an Origin must not match the
+		// pattern: these were accepted by string equality against the
+		// wildcard entries before isTrustedOrigin skipped exact
+		// comparison for entries containing "*".
+		"*.schemeless.example.com", "*.sChemeless.eXAmple.Com",
+		"https://*.wild.example.com", "HTTPS://*.WILD.EXAMPLE.COM",
 	} {
 		f.Add(o)
 	}
