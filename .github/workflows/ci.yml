@@ -20,7 +20,7 @@ jobs:
         # not silently require a newer toolchain than it declares.
         go: ['1.22', 'stable']
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version: ${{ matrix.go }}
@@ -37,7 +37,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           # Lint gates regressions while this repository pays down legacy
           # warnings; compare against the previous commit so unchanged
@@ -76,7 +76,7 @@ jobs:
     # shows the coverage rather than asserting it.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with: { go-version: stable }
       - name: List fuzz targets
@@ -92,7 +92,7 @@ jobs:
     name: conformance (SQLite)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with: { go-version: stable }
       - name: SQL adapter and full auth flow against real SQLite
@@ -136,7 +136,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with: { go-version: stable }
       - name: Conformance suite, migrations and auth flow on PostgreSQL
@@ -160,7 +160,7 @@ jobs:
           --health-timeout 5s
           --health-retries 20
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with: { go-version: stable }
       - name: Conformance suite, migrations and auth flow on MySQL
